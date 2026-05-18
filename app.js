@@ -3,15 +3,16 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const cookieParser = require('cookie-parser');
+const authRouter = require("./routes/authRouter.js");
+const protectedRouter = require("./routes/protectedRouter.js");
 
 const corsOptions = {origin: [process.env.ORIGIN], credentials: true}
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
 
-app.get("/v1/auth", (req, res) => {
-    res.json({message: "Test worked :)"})
-});
+app.use("/v1/auth", authRouter);
+app.use("/v1/protected", protectedRouter)
 
 const PORT = Number(process.env.PORT);
 app.listen(PORT, () => {
