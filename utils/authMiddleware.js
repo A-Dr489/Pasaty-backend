@@ -21,7 +21,7 @@ async function authenticateUser(req, res, next) {
             return res.status(401).json({ message: 'User not found' });
         }
         
-        if (decoded.token_version !== rows[0].token_version) {
+        if (decoded.version !== rows[0].version) {
             return res.status(401).json({ 
                 message: 'Session terminated. Please login again.',
                 code: 'SESSION_TERMINATED'

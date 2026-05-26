@@ -13,6 +13,9 @@ app.use(cookieParser());
 
 app.use("/v1/auth", authRouter);
 app.use("/v1/protected", protectedRouter)
+app.get("/test", (req, res) => {
+    res.json({message: "Request Worked"});
+})
 
 const PORT = Number(process.env.PORT);
 app.listen(PORT, () => {

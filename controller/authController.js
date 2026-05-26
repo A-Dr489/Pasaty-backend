@@ -56,7 +56,7 @@ exports.postRegister = [validatorRegister, async (req, res) => {
 
         const rows = await db.addUser(req.body.name, req.body.phone, hashedPassword);
         res.status(201).json({
-            message: "Account created succesfully",
+            message: "Account created successfully",
             user: rows[0]
         })
     } catch(e) {
