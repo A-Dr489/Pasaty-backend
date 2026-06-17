@@ -4,9 +4,13 @@ const { body, validationResult } = require("express-validator");
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/jwtTools.js");
 
 const validatorRegister = [
-    body("name").trim()
-    .notEmpty().withMessage("name is required")
-    .isLength({min: 3, max: 50}).withMessage("name must be 3 - 50 character"),
+    body("Fname").trim()
+    .notEmpty().withMessage("First name is required")
+    .isLength({min: 3, max: 50}).withMessage("First name must be 3 - 50 character"),
+
+    body("Lname").trim()
+    .notEmpty().withMessage("Last name is required")
+    .isLength({min: 3, max: 50}).withMessage("Last name must be 3 - 50 character"),
 
     body("phone").trim()
     .notEmpty().withMessage("phone is required")
@@ -54,7 +58,7 @@ exports.postRegister = [validatorRegister, async (req, res) => {
     try {
         const hashedPassword = await bcrypt.hash(req.body.password, 10);
 
-        const rows = await db.addUser(req.body.name, req.body.phone, hashedPassword);
+        const rows = await db.addUser(req.body.Fname, req.body.Lname, req.body.phone, hashedPassword);
         res.status(201).json({
             message: "Account created successfully",
             user: rows[0]
@@ -107,7 +111,7 @@ exports.postLogin = [validatorLogin, async (req, res) => {
 
         res.json({
             accessToken: accessToken,
-            user: {id: rows[0].id, name: rows[0].name, phone: rows[0].phone}
+            user: {id: rows[0].id, Fname: rows[0].first_name, Lname: rows[0].last_name, phone: rows[0].phone}
         })
     } catch(e) {
         console.log("Server Error (login): " + e);

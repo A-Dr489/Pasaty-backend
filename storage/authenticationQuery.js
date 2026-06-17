@@ -1,7 +1,7 @@
 const pool = require("./pool.js");
 
-async function addUser(name, phone, password) {
-    const { rows } = await pool.query("INSERT INTO users (name, phone, password) VALUES ($1, $2, $3) RETURNING id, name, phone", [name, phone, password]);
+async function addUser(Fname, Lname, phone, password) {
+    const { rows } = await pool.query("INSERT INTO users (first_name, last_name, phone, password) VALUES ($1, $2, $3, $4) RETURNING id, first_name, last_name, phone", [Fname, Lname, phone, password]);
     return rows;
 }
 
@@ -24,7 +24,7 @@ async function deleteRefreshToken(token) {
 }
 
 async function getUserById(id) {
-    const { rows } = await pool.query("SELECT id, name, phone, createdat FROM users WHERE id = $1", [id]);
+    const { rows } = await pool.query("SELECT id, first_name, last_name, phone, createdat FROM users WHERE id = $1", [id]);
     return rows;
 }
 
