@@ -1,8 +1,41 @@
 const pool = require("./pool.js");
 
-async function addUser(Fname, Lname, phone, password) {
-    const { rows } = await pool.query("INSERT INTO users (first_name, last_name, phone, password) VALUES ($1, $2, $3, $4) RETURNING id, first_name, last_name, phone", [Fname, Lname, phone, password]);
+async function addUser(Fname, Lname, phone, role, password) {
+    const { rows } = await pool.query("INSERT INTO users (first_name, last_name, phone, role, password) VALUES ($1, $2, $3, $4, $5) RETURNING id, first_name, last_name, phone", [Fname, Lname, phone, role, password]);
     return rows;
+}
+
+async function addParent(Fname, Lname, phone, role, password, students) {
+    const client = await pool.connect();
+    try{
+        await client.query("BEGIN");
+
+        const { rows } = await client.query(
+          "INSERT INTO users (first_name, last_name, phone, role, password) VALUES ($1, $2, $3, $4, $5) RETURNING id, first_name, last_name, phone",
+          [Fname, Lname, phone, role, password],
+        );
+        const parentid = rows[0].id;
+        for (const student of students) {
+          await client.query(
+            `
+                INSERT INTO students (
+                    first_name,
+                    parentid
+                )
+                VALUES ($1, $2)
+            `,
+            [student.first_name,  parentid],
+          );
+        }
+
+        await client.query("COMMIT");
+        return rows;
+    } catch(e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
 }
 
 async function getUserByPhone(phone) {
@@ -40,6 +73,7 @@ async function checkTokenVersion(id) {
 
 module.exports = {
     addUser,
+    addParent,
     getUserByPhone,
     addRefreshToken,
     checkForRefreshToken,

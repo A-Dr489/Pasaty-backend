@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const db = require("../storage/authenticationQuery.js");
 const { body, validationResult } = require("express-validator");
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/jwtTools.js");
+const { ROLE } = require("../utils/enum.js");
 
 const validatorRegister = [
     body("Fname").trim()
@@ -58,7 +59,12 @@ exports.postRegister = [validatorRegister, async (req, res) => {
     try {
         const hashedPassword = await bcrypt.hash(req.body.password, 10);
 
-        const rows = await db.addUser(req.body.Fname, req.body.Lname, req.body.phone, hashedPassword);
+        let rows; 
+        if(req.body.students.length === 0 && req.body.role !== ROLE.PARENT) {
+            rows = await db.addUser(req.body.Fname, req.body.Lname, req.body.phone, req.body.role, hashedPassword); 
+        } else {
+            rows = await db.addParent(req.body.Fname, req.body.Lname, req.body.phone, req.body.role, hashedPassword, req.body.students);
+        }
         res.status(201).json({
             message: "Account created successfully",
             user: rows[0]
