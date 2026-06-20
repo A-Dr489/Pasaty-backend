@@ -8,7 +8,7 @@ exports.getProfile = async (req, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
         
-        res.send({user: rows[0]})
+        res.json({user: rows[0]})
     } catch(e) {
         console.log("Server Error (getProfile): " + e);
         res.status(500).json({message: "Internal Server Error"});
