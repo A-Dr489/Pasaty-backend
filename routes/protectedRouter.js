@@ -5,5 +5,6 @@ const { authenticateUser, requiredRole } = require("../utils/authMiddleware.js")
 const { ROLE } = require("../utils/enum.js");
 
 protectedRouter.get("/profile", authenticateUser, protectedController.getProfile);
+protectedRouter.get("/students", authenticateUser, requiredRole(ROLE.PARENT), protectedController.getStudents);
 
 module.exports = protectedRouter;

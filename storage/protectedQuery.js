@@ -5,6 +5,12 @@ async function getUserById(id) {
     return rows;
 }
 
+async function getStudentById(id) {
+    const { rows } = await pool.query("SELECT * FROM students WHERE parentid = $1", [id]);
+    return rows;
+}
+
 module.exports = {
-    getUserById
+    getUserById,
+    getStudentById
 }
