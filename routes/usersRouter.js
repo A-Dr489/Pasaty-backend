@@ -9,5 +9,6 @@ usersRouter.get("/students/:id", authenticateUser, requiredRole(ROLE.ADMIN), use
 usersRouter.put("/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.updateUser);
 usersRouter.delete("/student/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.deleteStudent);
 usersRouter.delete("/user/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.deleteUser);
+usersRouter.post("/search", authenticateUser, requiredRole(ROLE.ADMIN), usersController.searchUser);
 
 module.exports = usersRouter;

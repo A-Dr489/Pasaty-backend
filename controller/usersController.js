@@ -1,4 +1,5 @@
 const db = require("../storage/usersQuery.js");
+const { isPhoneNumber } = require("../utils/functions.js");
 
 exports.getAllUsers = async (req, res) => {
     try{
@@ -61,6 +62,36 @@ exports.deleteUser = async (req, res) => {
         res.json({message: "Done!"});
     } catch(e) {
         console.log("Server Error (deleteUser): " + e);
+        res.status(500).json({message: "Internal Server Error"});
+    }
+}
+
+exports.searchUser = async (req, res) => {
+    try{
+        const { search } = req.body;
+        if (!search || search.trim() === '') {
+            return res.status(400).json({ message: "The search was empty!" });
+        }
+        const query = search.trim();
+        if(isPhoneNumber(query)) {
+            const cleanPhone = query.replace(/[\s\-()]/g, '');
+            const rows = await db.searchByPhone(cleanPhone);
+            if(rows.length === 0) {
+                return res.status(404).json({message: "Nothing found phone"});
+            }
+
+            res.json({users: rows});
+        } else {
+            const rows = await db.searchByString(query);
+            if(rows.length === 0) {
+                return res.status(404).json({message: "Nothing found"});
+            }
+
+            res.json({users: rows});
+        }
+
+    } catch(e) {
+        console.log("Server Error (searchUser): " + e);
         res.status(500).json({message: "Internal Server Error"});
     }
 }
