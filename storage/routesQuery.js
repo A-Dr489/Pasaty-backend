@@ -147,6 +147,10 @@ async function searchStudentName(name) {
     return rows;
 }
 
+async function deleteRouteById(routeid) {
+    await pool.query("DELETE FROM routes WHERE id = $1", [routeid]);
+}
+
 module.exports = {
     addRouteName,
     getAllRoutes,
@@ -155,5 +159,6 @@ module.exports = {
     updateRoutes,
     getRouteWithDistance,
     searchRouteName,
-    searchStudentName
+    searchStudentName,
+    deleteRouteById
 }

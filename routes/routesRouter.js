@@ -11,5 +11,6 @@ routesRouter.post("/waypoints/:id", authenticateUser, requiredRole(ROLE.ADMIN), 
 routesRouter.put("/generation", authenticateUser, requiredRole(ROLE.ADMIN), routesController.getRoutes);
 routesRouter.post("/search", authenticateUser, requiredRole(ROLE.ADMIN), routesController.searchRoute);
 routesRouter.get("/search/student/:name", authenticateUser, requiredRole(ROLE.ADMIN), routesController.searchStudent);
+routesRouter.delete("/:id", authenticateUser, requiredRole(ROLE.ADMIN), routesController.deleteRoute);
 
 module.exports = routesRouter;

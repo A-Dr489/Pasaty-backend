@@ -134,3 +134,15 @@ exports.searchStudent = async (req, res) => {
         res.status(500).json({message: "Internal Server Error"});
     }
 }
+
+exports.deleteRoute = async (req, res) => {
+    const routeid = req.params.id;
+    try{
+        await db.deleteRouteById(routeid);
+
+        res.json({message: "Done!"});
+    } catch(e) {
+        console.log("Server Error (deleteRoute): " + e);
+        res.status(500).json({message: "Internal Server Error"});
+    }
+}
