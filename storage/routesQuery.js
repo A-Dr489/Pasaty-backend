@@ -129,7 +129,7 @@ async function getRouteWithDistance(routeid) {
 
 async function searchRouteName(name) {
     const cleanName = `%${name}%`;
-    const { rows } = await pool.query("SELECT * FROM routes WHERE name ILIKE $1 ORDER BY id DESC", [cleanName]);
+    const { rows } = await pool.query("SELECT id, name, updatedat FROM routes WHERE name ILIKE $1 ORDER BY id DESC", [cleanName]);
     return rows;
 }
 
