@@ -13,7 +13,11 @@ exports.postRoute = async (req, res) => {
         res.json({routeid: rows[0].id});
     } catch(e) {
         console.log("Server Error (postRoute): " + e);
-        res.status(500).json({message: "Internal Server Error"});
+        if(e.code === '23505') {
+            res.status(400).json({message: "Name must be Unique"});
+        } else {
+            res.status(500).json({message: "Internal Server Error"});
+        }
     }
 }
 
@@ -35,7 +39,7 @@ exports.getRouteWaypoints = async (req, res) => {
     const routeid = req.params.id;
     try {
         const rows = await db.getWaypointsByRoute(routeid);
-        const data = rows[0];
+        const data = rows.waypoints[0];
         if (!data.route_exists) {
             return res.status(400).json({ message: "No route with this id" });
         }
@@ -43,7 +47,7 @@ exports.getRouteWaypoints = async (req, res) => {
             return res.status(404).json({ message: "No waypoints found" });
         }
 
-        res.json({waypoints: data.waypoints});
+        res.json({waypoints: data.waypoints, driver: rows.driver[0]});
     } catch(e) {
         console.log("Server Error (getRouteWaypoints): " + e);
         res.status(500).json({message: "Internal Server Error"});
@@ -143,6 +147,33 @@ exports.deleteRoute = async (req, res) => {
         res.json({message: "Done!"});
     } catch(e) {
         console.log("Server Error (deleteRoute): " + e);
+        res.status(500).json({message: "Internal Server Error"});
+    }
+}
+
+exports.searchDriver = async (req, res) => {
+    try{
+        const searchedName = req.params.name;
+        const rows = await db.searchDriverName(searchedName);
+        if(rows.length === 0) {
+            return res.status(404).json({message: "No driver found"});
+        }
+
+        res.json({drivers: rows});
+    } catch(e) {
+        console.log("Server Error (searchDriver): " + e);
+        res.status(500).json({message: "Internal Server Error"});
+    }
+}
+
+exports.updateRoutesDriver = async (req, res) => {
+    try{
+        const { userid, routeid } = req.body;
+        await db.updateDriver(userid, routeid);
+
+        res.json({message: "Done!"});
+    } catch(e) {
+        console.log("Server Error (updateRoutesDriver): " + e);
         res.status(500).json({message: "Internal Server Error"});
     }
 }

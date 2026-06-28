@@ -2,42 +2,74 @@ const pool = require("./pool.js");
 const format = require("pg-format");
 
 async function addRouteName(name) {
-    const { rows } = await pool.query("INSERT INTO routes (name) VALUES ($1) RETURNING id", [name]);
-    return rows;
+    const client = await pool.connect();
+    try{
+        await client.query("BEGIN");
+
+        const { rows } = await client.query("INSERT INTO routes (name) VALUES ($1) RETURNING id", [name]);
+        
+        await client.query("INSERT INTO drivers (routeid) VALUES ($1)", [rows[0].id]);
+
+        await client.query("COMMIT");
+        return rows;
+    } catch(e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
 }
 
 async function getAllRoutes() {
     const { rows } = await pool.query("SELECT id, name, updatedat FROM routes ORDER BY id DESC");
     return rows;
 }
-//This might need to be changed to display the student's full name
+
 async function getWaypointsByRoute(routeid) {
-    const { rows } = await pool.query(`
-        SELECT
-            EXISTS (
-                SELECT 1
-                FROM routes
-                WHERE id = $1
-            ) AS route_exists,
-            COALESCE(
-                json_agg(
-                    to_jsonb(w) ||
-                    jsonb_build_object(
-                        'student_name',
-                        CONCAT(s.first_name, ' ', u.first_name, ' ', u.last_name)
-                    )
-                    ORDER BY w.sort_number
-                ) FILTER (WHERE w.id IS NOT NULL),
-                '[]'
-            ) AS waypoints
-        FROM waypoints w
-        LEFT JOIN students s
-            ON s.id = w.studentid
-        LEFT JOIN users u
-            ON u.id = s.parentid
-        WHERE w.routeid = $1;
-    `, [routeid]);
-    return rows;
+    const client = await pool.connect();
+    try{
+        await client.query("BEGIN");
+
+        const waypoints = await client.query(`
+            SELECT
+                EXISTS (
+                    SELECT 1
+                    FROM routes
+                    WHERE id = $1
+                ) AS route_exists,
+                COALESCE(
+                    json_agg(
+                        to_jsonb(w) ||
+                        jsonb_build_object(
+                            'student_name',
+                            CONCAT(s.first_name, ' ', u.first_name, ' ', u.last_name)
+                        )
+                        ORDER BY w.sort_number
+                    ) FILTER (WHERE w.id IS NOT NULL),
+                    '[]'
+                ) AS waypoints
+            FROM waypoints w
+            LEFT JOIN students s
+                ON s.id = w.studentid
+            LEFT JOIN users u
+                ON u.id = s.parentid
+            WHERE w.routeid = $1;
+        `, [routeid]);
+
+        let driver = await client.query("SELECT * FROM drivers WHERE routeid = $1", [routeid]);
+        if(driver.rows[0].userid) {
+            const fullDriver = await client.query("SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) as full_name FROM users u WHERE id = $1", [driver.rows[0].userid]);
+            driver = fullDriver;
+        }
+
+        await client.query("COMMIT");
+        return {waypoints: waypoints.rows, driver: driver.rows};
+    } catch(e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
 }
 
 async function saveDraftChanges(routeid, inserts, updates, deletes) {
@@ -151,6 +183,22 @@ async function deleteRouteById(routeid) {
     await pool.query("DELETE FROM routes WHERE id = $1", [routeid]);
 }
 
+async function searchDriverName(name) {
+    const cleanName = `%${name}%`;
+    const { rows } = await pool.query(`
+        SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) as full_name
+        FROM users u
+        WHERE CONCAT(u.first_name, ' ', u.last_name) ILIKE $1
+        AND u.role = 'driver'
+        LIMIT 10;
+    `, [cleanName]);
+    return rows;
+}
+
+async function updateDriver(userid, routeid) {
+    await pool.query("UPDATE drivers SET userid = $1 WHERE routeid = $2", [userid, routeid]);
+}
+
 module.exports = {
     addRouteName,
     getAllRoutes,
@@ -160,5 +208,7 @@ module.exports = {
     getRouteWithDistance,
     searchRouteName,
     searchStudentName,
-    deleteRouteById
+    deleteRouteById,
+    searchDriverName,
+    updateDriver
 }

@@ -36,6 +36,34 @@ async function authenticateUser(req, res, next) {
     }
 }
 
+async function authenticateSocket(socket, next) {
+    const token = socket.handshake.auth.token;
+
+    if(!token) {
+        next(new Error('Authentication required'));
+    }
+
+    try {
+        const decoded = verifyAccessToken(token);
+        const rows = await db.checkTokenVersion(decoded.userid);
+
+        if(rows.length === 0) {
+            return res.status(401).json({ message: 'User not found' });
+        }
+        if (decoded.token_version !== rows[0].token_version) {
+            return res.status(401).json({ 
+                message: 'Session terminated. Please login again.',
+                code: 'SESSION_TERMINATED'
+            });
+        }
+
+        socket.user = decoded;
+        next();
+    } catch(e) {
+        next(new Error("Invalid Token Or expired"));
+    }
+}
+
 const requiredRole = (...allowedRoles) => {
     return (req, res, next) => {
         if(!req.user) {
@@ -52,5 +80,6 @@ const requiredRole = (...allowedRoles) => {
 
 module.exports = {
     authenticateUser,
+    authenticateSocket,
     requiredRole
 }
