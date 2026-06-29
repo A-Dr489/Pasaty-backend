@@ -44,7 +44,7 @@ exports.getRouteWaypoints = async (req, res) => {
             return res.status(400).json({ message: "No route with this id" });
         }
         if (data.waypoints.length === 0) {
-            return res.status(404).json({ message: "No waypoints found" });
+            return res.status(404).json({ message: "No waypoints found", driver: rows.driver[0] });
         }
 
         res.json({waypoints: data.waypoints, driver: rows.driver[0]});
