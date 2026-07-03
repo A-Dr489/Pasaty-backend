@@ -6,5 +6,6 @@ const { ROLE } = require("../utils/enum.js");
 
 protectedRouter.get("/profile", authenticateUser, protectedController.getProfile);
 protectedRouter.get("/students", authenticateUser, requiredRole(ROLE.PARENT), protectedController.getStudents);
+protectedRouter.get("/myroutes", authenticateUser, requiredRole(ROLE.DRIVER), protectedController.getMyRoutes);
 
 module.exports = protectedRouter;

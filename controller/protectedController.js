@@ -29,3 +29,18 @@ exports.getStudents = async (req, res) => {
         res.status(500).json({message: "Internal Server Error"});
     }
 }
+
+exports.getMyRoutes = async (req, res) => {
+    try{
+        const rows = await db.getRoutesByDriverId(req.user.userid);
+
+        if(rows.length === 0) {
+            return res.status(404).json({ message: 'No routes has founded' });
+        }
+
+        res.json({routes: rows})
+    } catch(e) {
+        console.log("Server Error (getMyRoutes): " + e);
+        res.status(500).json({message: "Internal Server Error"});
+    }
+}

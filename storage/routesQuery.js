@@ -2,22 +2,8 @@ const pool = require("./pool.js");
 const format = require("pg-format");
 
 async function addRouteName(name) {
-    const client = await pool.connect();
-    try{
-        await client.query("BEGIN");
-
-        const { rows } = await client.query("INSERT INTO routes (name) VALUES ($1) RETURNING id", [name]);
-        
-        await client.query("INSERT INTO drivers (routeid) VALUES ($1)", [rows[0].id]);
-
-        await client.query("COMMIT");
-        return rows;
-    } catch(e) {
-        await client.query("ROLLBACK");
-        throw e;
-    } finally {
-        client.release();
-    }
+    const { rows } = await pool.query("INSERT INTO routes (name) VALUES ($1) RETURNING id", [name]);
+    return rows;
 }
 
 async function getAllRoutes() {
@@ -56,9 +42,9 @@ async function getWaypointsByRoute(routeid) {
             WHERE w.routeid = $1;
         `, [routeid]);
 
-        let driver = await client.query("SELECT * FROM drivers WHERE routeid = $1", [routeid]);
-        if(driver.rows[0].userid) {
-            const fullDriver = await client.query("SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) as full_name FROM users u WHERE id = $1", [driver.rows[0].userid]);
+        let driver = await client.query("SELECT driverid FROM routes WHERE id = $1", [routeid]);
+        if(driver.rows[0].driverid) {
+            const fullDriver = await client.query("SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) as full_name FROM users u WHERE id = $1", [driver.rows[0].driverid]);
             driver = fullDriver;
         }
 
@@ -76,6 +62,24 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+
+        const studentRouteMap = new Map();
+
+        if(deletes.length > 0) {
+            const { rows: deletedRows } = await client.query("DELETE FROM waypoints WHERE id = ANY($1::int[]) RETURNING studentid", [deletes]);
+            for (const row of deletedRows) {
+                if (row.studentid !== null) {
+                    studentRouteMap.set(row.studentid, null);
+                }
+            }
+        }
+
+        for (const item of [...inserts, ...updates]) {
+            const studentid = item.studentid === "" || item.type !== "student" ? null : item.studentid;
+            if (studentid !== null) {
+                studentRouteMap.set(Number(studentid), Number(routeid));
+            }
+        }
 
         if(inserts.length > 0) {
             const insertValues = inserts.map((insert) => [
@@ -118,8 +122,15 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
             await client.query(queryUpdate);
         }
 
-        if(deletes.length > 0) {
-            await client.query("DELETE FROM waypoints WHERE id = ANY($1::int[])", [deletes]);
+        if (studentRouteMap.size > 0) {
+            const studentRouteValues = Array.from(studentRouteMap.entries()); // [studentid, routeid | null]
+            const queryStudents = format(`
+                UPDATE students AS s
+                SET routeid = data.routeid::int
+                FROM (VALUES %L) AS data(studentid, routeid)
+                WHERE s.id = data.studentid::int;
+            `, studentRouteValues);
+            await client.query(queryStudents);
         }
 
         await client.query("UPDATE routes SET distance = NULL, duration = NULL, geo = NULL WHERE id = $1", [routeid]);
@@ -196,7 +207,7 @@ async function searchDriverName(name) {
 }
 
 async function updateDriver(userid, routeid) {
-    await pool.query("UPDATE drivers SET userid = $1 WHERE routeid = $2", [userid, routeid]);
+    await pool.query("UPDATE routes SET driverid = $1 WHERE id = $2", [userid, routeid]);
 }
 
 module.exports = {

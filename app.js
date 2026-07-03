@@ -2,7 +2,6 @@ require("dotenv").config();
 const express = require("express");
 const app = express();
 const http = require("http");
-const { Server } = require('socket.io');
 const server = http.createServer(app);
 const cors = require("cors");
 const cookieParser = require('cookie-parser');
@@ -10,8 +9,9 @@ const authRouter = require("./routes/authRouter.js");
 const protectedRouter = require("./routes/protectedRouter.js");
 const usersRouter = require("./routes/usersRouter.js");
 const routesRouter = require("./routes/routesRouter.js");
-const socketHandler = require("./sockets/socketHandler.js");
-const { authenticateSocket } = require("./utils/authMiddleware.js");
+const attendanceRouter = require("./routes/AttendanceRouter.js");
+const { socketHandler } = require("./sockets/socketHandler.js");
+const { httpError } = require("./utils/functions.js");
 
 const corsOptions = {origin: [process.env.ORIGIN], credentials: true}
 app.use(cors(corsOptions));
@@ -22,21 +22,20 @@ app.use("/v1/auth", authRouter);
 app.use("/v1/protected", protectedRouter);
 app.use("/v1/users", usersRouter);
 app.use("/v1/routes", routesRouter);
-app.get("/test", (req, res) => {
-    res.json({message: "Request Worked"});
+app.use("/v1/attendance", attendanceRouter);
+app.get("/test", (req, res, next) => {
+    try {
+        throw httpError(500, "Internal");
+    } catch(e) {
+        next(e);
+    }
 })
-
-const io = new Server(server, {
-  cors: {
-    origin: process.env.ORIGIN,
-    methods: ["GET", "POST"],
-    // credentials: true
-  }
+app.use((err, _req, res, _next) => {
+    const status = err.status || 500;
+    res.status(status).json({ message: err.message || 'Internal Server error' });
 });
 
-io.use(authenticateSocket);
-
-socketHandler(io);
+socketHandler(server);
 
 const PORT = Number(process.env.PORT);
 server.listen(PORT, () => {

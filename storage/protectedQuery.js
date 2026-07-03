@@ -10,7 +10,13 @@ async function getStudentById(id) {
     return rows;
 }
 
+async function getRoutesByDriverId(driverid) {
+    const { rows } = await pool.query("SELECT id, name FROM routes WHERE driverid = $1", [driverid])
+    return rows;
+}
+
 module.exports = {
     getUserById,
-    getStudentById
+    getStudentById,
+    getRoutesByDriverId
 }
