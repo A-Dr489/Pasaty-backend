@@ -41,6 +41,7 @@ async function authenticateSocket(socket, next) {
 
     if(!token) {
         next(new Error('Authentication required'));
+        return;
     }
 
     try {
@@ -50,7 +51,7 @@ async function authenticateSocket(socket, next) {
         if(rows.length === 0) {
             return res.status(401).json({ message: 'User not found' });
         }
-        if (decoded.token_version !== rows[0].token_version) {
+        if (decoded.version !== rows[0].version) {
             return res.status(401).json({ 
                 message: 'Session terminated. Please login again.',
                 code: 'SESSION_TERMINATED'
