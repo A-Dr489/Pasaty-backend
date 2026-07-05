@@ -81,18 +81,21 @@ const SCHOOL_TZ = process.env.SCHOOL_TZ;
 async function startMorningRoute(routeid, driverid) {
     return withTransaction(async (client) => {
         const { rows: routeRows } = await client.query(
-            `SELECT id, driverid, morning_status
-                FROM routes
-                WHERE id = $1
-                FOR UPDATE`,
-            [routeid]
+            `SELECT id, driverid, morning_status, morning_started_at, morning_completed_at,
+                    (COALESCE(morning_completed_at, morning_started_at) AT TIME ZONE $2)::date
+                      = (now() AT TIME ZONE $2)::date AS morning_is_today
+               FROM routes
+              WHERE id = $1
+              FOR UPDATE`,
+            [routeid, SCHOOL_TZ]
         );
         if (routeRows.length === 0) throw httpError(404, 'Route not found');
         const route = routeRows[0];
         if (route.driverid !== driverid) {
             throw httpError(403, 'Driver not assigned to this route');
         }
-        if(route.morning_status === ROUTE_STATUS.IN_PROGRESS) {
+        const statusBelongsToToday = route.morning_is_today === true;
+        if(route.morning_status === ROUTE_STATUS.IN_PROGRESS && statusBelongsToToday) {
           const { rows: students } = await client.query(
             `SELECT a.id AS attendanceid, a.studentid AS id,
                     s.first_name, a.morning_status AS status
@@ -112,7 +115,9 @@ async function startMorningRoute(routeid, driverid) {
             students,
           }
         }
-        if (!STARTABLE.includes(route.morning_status)) {
+
+        const startable = STARTABLE.includes(route.morning_status) || !statusBelongsToToday;
+        if (!startable) {
             throw httpError(409, `Morning route already ${route.morning_status}`);
         }
 
@@ -303,7 +308,7 @@ async function completeMorningRoute(routeid, driverid) {
           SET morning_status = $2,
               morning_completed_at = now()
         WHERE id = $1
-      RETURNING morning_completed_at`,
+      RETURNING morning_started_at, morning_completed_at, morning_completed_at - morning_started_at AS trip_duration`,
       [routeid, ROUTE_STATUS.COMPLETED]
     );
 
@@ -343,10 +348,12 @@ async function completeMorningRoute(routeid, driverid) {
       total_students: finalStudents.length,
       arrived: finalStudents.filter((s) => s.status === ATTENDANCE_STATUS.ARRIVED).length,
       absent: finalStudents.filter((s) => s.status === ATTENDANCE_STATUS.ABSENT).length,
+      trip_duration: updRows[0].trip_duration
     };
 
     return {
       routeid: routeid,
+      started_at: updRows[0].morning_started_at,
       completed_at: updRows[0].morning_completed_at,
       summary,
       students: finalStudents,
@@ -357,11 +364,13 @@ async function completeMorningRoute(routeid, driverid) {
 async function startAfternoonRoute(routeid, driverid) {
   return withTransaction(async (client) => {
     const { rows: routeRows } = await client.query(
-      `SELECT id, driverid, morning_status, afternoon_status
-         FROM routes
-        WHERE id = $1
-        FOR UPDATE`,
-      [routeid]
+        `SELECT id, driverid, morning_status, afternoon_status, afternoon_started_at, afternoon_completed_at,
+                (COALESCE(afternoon_completed_at, afternoon_started_at) AT TIME ZONE $2)::date
+                  = (now() AT TIME ZONE $2)::date AS afternoon_is_today
+            FROM routes
+          WHERE id = $1
+          FOR UPDATE`,
+        [routeid, SCHOOL_TZ]
     );
     if (routeRows.length === 0) throw httpError(404, 'Route not found');
 
@@ -373,7 +382,8 @@ async function startAfternoonRoute(routeid, driverid) {
     if (route.morning_status !== ROUTE_STATUS.COMPLETED) {
       throw httpError(409, 'Finish the morning route before starting the afternoon');
     }
-    if(route.afternoon_status === ROUTE_STATUS.IN_PROGRESS) {
+    const statusBelongsToToday = route.afternoon_is_today === true;
+    if(route.afternoon_status === ROUTE_STATUS.IN_PROGRESS && statusBelongsToToday) {
           const { rows: students } = await client.query(
             `SELECT a.id AS attendanceid, a.studentid AS id,
                     s.first_name,
@@ -394,7 +404,8 @@ async function startAfternoonRoute(routeid, driverid) {
             students,
           }
         }
-    if (!STARTABLE.includes(route.afternoon_status)) {
+      const startable = STARTABLE.includes(route.afternoon_status) || !statusBelongsToToday;
+    if (!startable) {
       throw httpError(409, `Afternoon route already ${route.afternoon_status}`);
     }
 
@@ -535,7 +546,7 @@ async function completeAfternoonRoute(routeid, driverid) {
           SET afternoon_status = $2,
               afternoon_completed_at = now()
         WHERE id = $1
-      RETURNING afternoon_completed_at`,
+      RETURNING afternoon_started_at, afternoon_completed_at, afternoon_completed_at - afternoon_started_at AS trip_duration`,
       [routeid, ROUTE_STATUS.COMPLETED]
     );
 
@@ -578,10 +589,12 @@ async function completeAfternoonRoute(routeid, driverid) {
       total_students: finalStudents.length,
       dropped_off: finalStudents.filter((s) => s.afternoon_status === ATTENDANCE_STATUS.DROPPED_OFF).length,
       absent: finalStudents.filter((s) => s.afternoon_status === ATTENDANCE_STATUS.ABSENT).length,
+      trip_duration: updRows[0].trip_duration
     };
 
     return {
       routeid: routeid,
+      started_at: updRows[0].afternoon_started_at,
       completed_at: updRows[0].afternoon_completed_at,
       summary,
       students: finalStudents,
