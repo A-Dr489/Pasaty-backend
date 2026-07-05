@@ -49,13 +49,12 @@ async function authenticateSocket(socket, next) {
         const rows = await db.checkTokenVersion(decoded.userid);
 
         if(rows.length === 0) {
-            return res.status(401).json({ message: 'User not found' });
+            return next(new Error('User not found'));
         }
         if (decoded.version !== rows[0].version) {
-            return res.status(401).json({ 
-                message: 'Session terminated. Please login again.',
-                code: 'SESSION_TERMINATED'
-            });
+            const err = new Error('Session terminated. Please login again.');
+            err.data = { code: 'SESSION_TERMINATED' };
+            return next(err);
         }
 
         socket.user = decoded;

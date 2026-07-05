@@ -602,6 +602,93 @@ async function completeAfternoonRoute(routeid, driverid) {
   });
 }
 
+const PHASE_STATUSES = {
+  morning: ['WAITING', 'BOARDED', 'ARRIVED', 'ABSENT'],
+  afternoon: ['WAITING', 'BOARDED', 'DROPPED_OFF', 'ABSENT'],
+};
+
+const STATUS_TS_COLUMN = {
+  morning: { BOARDED: 'morning_boarded_at', ARRIVED: 'morning_arrived_at' },
+  afternoon: { BOARDED: 'afternoon_boarded_at', DROPPED_OFF: 'afternoon_dropped_off_at' },
+};
+
+//ADMIN STUFF UNDER HERE
+
+async function adminOverrideAttendance(attendanceid, admin, phase, status) {
+  const allowed = PHASE_STATUSES[phase];
+  if (!allowed) throw httpError(400, `Invalid phase ${phase}`);
+  if (!allowed.includes(status)) {
+    throw httpError(400, `Invalid ${phase} status ${status}`);
+  }
+
+  return withTransaction(async (client) => {
+    const { rows } = await client.query(
+      `SELECT id, routeid, morning_status, afternoon_status
+         FROM attendance
+        WHERE id = $1
+        FOR UPDATE`,
+      [attendanceid]
+    );
+    if (rows.length === 0) throw httpError(404, 'Attendance not found');
+
+    const row = rows[0];
+    const statusCol = `${phase}_status`;
+    const oldStatus = row[statusCol];
+
+    if (oldStatus === status) {
+      return { changed: false, attendanceid: row.id, routeid: row.routeid,
+               phase, old_status: oldStatus, new_status: status };
+    }
+
+    // Stamp the matching timestamp column when the new status has one.
+    const tsCol = STATUS_TS_COLUMN[phase][status];
+    const tsAssign = tsCol ? `, ${tsCol} = now()` : '';
+
+    const { rows: upd } = await client.query(
+      `UPDATE attendance
+          SET ${statusCol} = $2,
+              updated_by = $3,
+              updated_at = now()
+              ${tsAssign}
+        WHERE id = $1
+      RETURNING updated_at`,
+      [attendanceid, status, admin.userid]
+    );
+
+    await client.query(
+      `INSERT INTO attendance_audit
+         (attendanceid, phase, old_status, new_status, changed_by, changed_by_role)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [attendanceid, phase, oldStatus, status, admin.userid, admin.role]
+    );
+
+    return {
+      changed: true,
+      attendanceid: row.id,
+      routeid: row.routeid,
+      phase,
+      old_status: oldStatus,
+      new_status: status,
+      changed_at: upd[0].updated_at,
+    };
+  });
+}
+
+async function getAttendance(routeid, date) {
+  const { rows } = await pool.query(
+    `SELECT a.id AS attendanceid, a.studentid AS id,
+            s.first_name,
+            a.morning_status, a.afternoon_status
+       FROM attendance a
+       JOIN students s ON s.id = a.studentid
+      WHERE a.routeid = $1
+        AND a.attendance_date = $2::date
+      ORDER BY s.id`,
+    [routeid, date]
+  );
+  return rows;
+}
+
 module.exports = {
     startMorningRoute,
     boardMorning,
@@ -611,5 +698,7 @@ module.exports = {
     boardAfternoon,
     dropoffAfternoon,
     completeAfternoonRoute,
-    absentAfternoon
+    absentAfternoon,
+    adminOverrideAttendance,
+    getAttendance
 }

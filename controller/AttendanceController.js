@@ -212,3 +212,45 @@ exports.completeAfternoon = async (req, res, next) => {
     next(err);
   }
 }
+
+exports.adminOverride = async (req, res, next) => {
+  try {
+      const attendanceid = Number(req.params.attendanceid);
+      if (!Number.isInteger(attendanceid)) throw httpError(400, 'Invalid attendanceid');
+  
+      // Derive phase from whichever status key is present.
+      let phase, status;
+      if (req.body.afternoon_status !== undefined) {
+        phase = 'afternoon';
+        status = req.body.afternoon_status;
+      } else if (req.body.morning_status !== undefined) {
+        phase = 'morning';
+        status = req.body.morning_status;
+      } else {
+        throw httpError(400, 'Provide morning_status or afternoon_status');
+      }
+  
+      const admin = req.user; // { id, role }
+      const result = await db.adminOverrideAttendance(attendanceid, admin, phase, status);
+  
+      res.json(result);
+    } catch (err) {
+      console.log("Server Error (adminOverride): " + err);
+      next(err);
+    }
+}
+
+exports.routeAttendance = async (req, res, next) => {
+  try {
+      const routeid = Number(req.params.routeid);
+      const { date } = req.body;
+      if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
+      if(!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw httpError(400, "date must be provided as YYYY-MM-DD")
+
+      const students = await db.getAttendance(routeid, date);
+      res.json({ routeid: routeid, students });
+    } catch (err) {
+      console.log("Server Error (routeAttendance): " + err);
+      next(err);
+    }
+}
