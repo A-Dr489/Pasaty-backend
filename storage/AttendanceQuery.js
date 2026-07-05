@@ -623,11 +623,15 @@ async function adminOverrideAttendance(attendanceid, admin, phase, status) {
 
   return withTransaction(async (client) => {
     const { rows } = await client.query(
-      `SELECT id, routeid, morning_status, afternoon_status
-         FROM attendance
-        WHERE id = $1
-        FOR UPDATE`,
-      [attendanceid]
+      `SELECT a.id, a.routeid, a.morning_status, a.afternoon_status,
+              r.morning_status   AS route_morning_status,
+              r.afternoon_status AS route_afternoon_status,
+              (a.attendance_date = (now() AT TIME ZONE $2)::date) AS is_today
+         FROM attendance a
+         JOIN routes r ON r.id = a.routeid
+        WHERE a.id = $1
+        FOR UPDATE OF a`,
+      [attendanceid, SCHOOL_TZ]
     );
     if (rows.length === 0) throw httpError(404, 'Attendance not found');
 
@@ -635,9 +639,18 @@ async function adminOverrideAttendance(attendanceid, admin, phase, status) {
     const statusCol = `${phase}_status`;
     const oldStatus = row[statusCol];
 
+    const routePhaseStatus = phase === 'morning'
+      ? row.route_morning_status
+      : row.route_afternoon_status;
+    const shouldBroadcast = row.is_today && routePhaseStatus === ROUTE_STATUS.IN_PROGRESS;
+
+
     if (oldStatus === status) {
-      return { changed: false, attendanceid: row.id, routeid: row.routeid,
-               phase, old_status: oldStatus, new_status: status };
+      return { 
+        changed: false, attendanceid: row.id, routeid: row.routeid,
+        phase, old_status: oldStatus, new_status: status,
+        should_broadcast: false 
+      };
     }
 
     // Stamp the matching timestamp column when the new status has one.
@@ -670,6 +683,7 @@ async function adminOverrideAttendance(attendanceid, admin, phase, status) {
       old_status: oldStatus,
       new_status: status,
       changed_at: upd[0].updated_at,
+      should_broadcast: shouldBroadcast,
     };
   });
 }

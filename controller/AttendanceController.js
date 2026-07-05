@@ -232,6 +232,16 @@ exports.adminOverride = async (req, res, next) => {
   
       const admin = req.user; // { id, role }
       const result = await db.adminOverrideAttendance(attendanceid, admin, phase, status);
+      if (result.changed && result.should_broadcast) {
+        console.log("broadcasted!!")
+        getIO().to(`route:${result.routeid}`).emit('attendance:admin_override', {
+          attendanceid: result.attendanceid,
+          phase: result.phase,
+          old_status: result.old_status,
+          new_status: result.new_status,
+          changed_at: result.changed_at,
+        });
+      }
   
       res.json(result);
     } catch (err) {
@@ -240,6 +250,7 @@ exports.adminOverride = async (req, res, next) => {
     }
 }
 
+//gets the attendance in the provided date
 exports.routeAttendance = async (req, res, next) => {
   try {
       const routeid = Number(req.params.routeid);
