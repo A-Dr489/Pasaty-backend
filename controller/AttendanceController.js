@@ -233,7 +233,6 @@ exports.adminOverride = async (req, res, next) => {
       const admin = req.user; // { id, role }
       const result = await db.adminOverrideAttendance(attendanceid, admin, phase, status);
       if (result.changed && result.should_broadcast) {
-        console.log("broadcasted!!")
         getIO().to(`route:${result.routeid}`).emit('attendance:admin_override', {
           attendanceid: result.attendanceid,
           phase: result.phase,

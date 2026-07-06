@@ -398,8 +398,8 @@ async function startAfternoonRoute(routeid, driverid) {
           return {
             route: {
               id: routeid,
-              morning_status: route.morning_status,
-              morning_started_at: route.morning_started_at,
+              afternoon_status: route.afternoon_status,
+              afternoon_started_at: route.afternoon_started_at,
             },
             students,
           }
