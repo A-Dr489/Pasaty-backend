@@ -213,6 +213,8 @@ exports.completeAfternoon = async (req, res, next) => {
   }
 }
 
+//ADMIN STUFF HERE
+
 exports.adminOverride = async (req, res, next) => {
   try {
       const attendanceid = Number(req.params.attendanceid);
