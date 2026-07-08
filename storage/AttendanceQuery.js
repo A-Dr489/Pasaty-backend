@@ -98,9 +98,11 @@ async function startMorningRoute(routeid, driverid) {
         if(route.morning_status === ROUTE_STATUS.IN_PROGRESS && statusBelongsToToday) {
           const { rows: students } = await client.query(
             `SELECT a.id AS attendanceid, a.studentid AS id,
-                    s.first_name, a.morning_status AS status
+                    s.first_name, a.morning_status AS status,
+                    CONCAT(p.first_name, ' ', p.last_name) AS parent_name
                 FROM attendance a
                 JOIN students s ON s.id = a.studentid
+                JOIN users p ON p.id = s.parentid
                 WHERE a.routeid = $1
                 AND a.attendance_date = (now() AT TIME ZONE $2)::date
                 ORDER BY s.id`,
@@ -145,9 +147,11 @@ async function startMorningRoute(routeid, driverid) {
         //    attendanceid included so the driver client can call PIECE 2 (board).
         const { rows: students } = await client.query(
         `SELECT a.id AS attendanceid, a.studentid AS id,
-                s.first_name, a.morning_status AS status
+                s.first_name, a.morning_status AS status,
+                CONCAT(p.first_name, ' ', p.last_name) AS parent_name
             FROM attendance a
             JOIN students s ON s.id = a.studentid
+            JOIN users p ON p.id = s.parentid
             WHERE a.routeid = $1
             AND a.attendance_date = (now() AT TIME ZONE $2)::date
             ORDER BY s.id`,
@@ -336,8 +340,10 @@ async function completeMorningRoute(routeid, driverid) {
     const { rows: finalStudents } = await client.query(
       `SELECT a.id AS attendanceid, a.studentid AS id,
               s.first_name, a.morning_status AS status
+              CONCAT(p.first_name, ' ', p.last_name) AS parent_name
          FROM attendance a
          JOIN students s ON s.id = a.studentid
+         JOIN users p ON p.id = s.parentid
         WHERE a.routeid = $1
           AND a.attendance_date = ${today}
         ORDER BY s.id`,
@@ -387,9 +393,11 @@ async function startAfternoonRoute(routeid, driverid) {
           const { rows: students } = await client.query(
             `SELECT a.id AS attendanceid, a.studentid AS id,
                     s.first_name,
+                    CONCAT(p.first_name, ' ', p.last_name) AS parent_name
                     a.morning_status, a.afternoon_status
               FROM attendance a
               JOIN students s ON s.id = a.studentid
+              JOIN users p ON p.id = s.parentid
               WHERE a.routeid = $1
                 AND a.attendance_date = ${today}
               ORDER BY s.id`,
@@ -431,9 +439,11 @@ async function startAfternoonRoute(routeid, driverid) {
     const { rows: students } = await client.query(
       `SELECT a.id AS attendanceid, a.studentid AS id,
               s.first_name,
+              CONCAT(p.first_name, ' ', p.last_name) AS parent_name,
               a.morning_status, a.afternoon_status
          FROM attendance a
          JOIN students s ON s.id = a.studentid
+         JOIN users p ON p.id = s.parentid
         WHERE a.routeid = $1
           AND a.attendance_date = ${today}
         ORDER BY s.id`,
@@ -576,9 +586,11 @@ async function completeAfternoonRoute(routeid, driverid) {
     const { rows: finalStudents } = await client.query(
       `SELECT a.id AS attendanceid, a.studentid AS id,
               s.first_name,
+              CONCAT(p.first_name, ' ', p.last_name) AS parent_name,
               a.morning_status, a.afternoon_status
          FROM attendance a
          JOIN students s ON s.id = a.studentid
+         JOIN users p ON p.id = s.parentid
         WHERE a.routeid = $1
           AND a.attendance_date = ${today}
         ORDER BY s.id`,
@@ -692,9 +704,11 @@ async function getAttendance(routeid, date) {
   const { rows } = await pool.query(
     `SELECT a.id AS attendanceid, a.studentid AS id,
             s.first_name,
+            CONCAT(p.first_name, ' ', p.last_name) AS parent_name
             a.morning_status, a.afternoon_status
        FROM attendance a
        JOIN students s ON s.id = a.studentid
+       JOIN users p ON p.id = s.parentid
       WHERE a.routeid = $1
         AND a.attendance_date = $2::date
       ORDER BY s.id`,

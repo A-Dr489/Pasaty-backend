@@ -12,7 +12,8 @@ export const SOCKET_EVENT = {
     ATTENDANCE_UPDATED: "attendance:updated",
     ATTENDANCE_MORNING_COMPLETE: "route:morning_completed",
     ATTENDANCE_AFTERNOON_START: "attendance:afternoon_started",
-    ATTENDANCE_AFTERNOON_COMPLETE: "route:afternoon_completed"
+    ATTENDANCE_AFTERNOON_COMPLETE: "route:afternoon_completed",
+    ATTENDANCE_ADMIN_OVERRIDE: "attendance:admin_override"
 }
 
 export const ROUTE_STATUS = {
