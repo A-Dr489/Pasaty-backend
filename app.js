@@ -12,8 +12,17 @@ const routesRouter = require("./routes/routesRouter.js");
 const attendanceRouter = require("./routes/AttendanceRouter.js");
 const { socketHandler } = require("./sockets/socketHandler.js");
 const { httpError } = require("./utils/functions.js");
-
-const corsOptions = {origin: [process.env.ORIGIN], credentials: true}
+//[process.env.ORIGIN]
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin || origin == process.env.ORIGIN) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    }, 
+    credentials: true
+}
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
