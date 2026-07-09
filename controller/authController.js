@@ -111,7 +111,7 @@ exports.postLogin = [validatorLogin, async (req, res) => {
         res.cookie('refreshToken', refreshToken, {
             httpOnly: true,
             secure: true,
-            sameSite: 'strict',
+            sameSite: 'none',
             maxAge: 15 * 24 * 60 * 60 * 1000
         });
 
