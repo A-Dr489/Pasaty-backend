@@ -339,7 +339,7 @@ async function completeMorningRoute(routeid, driverid) {
 
     const { rows: finalStudents } = await client.query(
       `SELECT a.id AS attendanceid, a.studentid AS id,
-              s.first_name, a.morning_status AS status
+              s.first_name, a.morning_status AS status,
               CONCAT(p.first_name, ' ', p.last_name) AS parent_name
          FROM attendance a
          JOIN students s ON s.id = a.studentid
