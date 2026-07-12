@@ -99,13 +99,15 @@ async function startMorningRoute(routeid, driverid) {
           const { rows: students } = await client.query(
             `SELECT a.id AS attendanceid, a.studentid AS id,
                     s.first_name, a.morning_status AS status,
-                    CONCAT(p.first_name, ' ', p.last_name) AS parent_name
+                    CONCAT(p.first_name, ' ', p.last_name) AS parent_name,
+                    w.sort_number AS sort_number
                 FROM attendance a
                 JOIN students s ON s.id = a.studentid
                 JOIN users p ON p.id = s.parentid
+                JOIN waypoints w ON w.studentid = s.id
                 WHERE a.routeid = $1
                 AND a.attendance_date = (now() AT TIME ZONE $2)::date
-                ORDER BY s.id`,
+                ORDER BY w.sort_number`,
             [routeid, SCHOOL_TZ]
           );
           return {
@@ -148,13 +150,15 @@ async function startMorningRoute(routeid, driverid) {
         const { rows: students } = await client.query(
         `SELECT a.id AS attendanceid, a.studentid AS id,
                 s.first_name, a.morning_status AS status,
-                CONCAT(p.first_name, ' ', p.last_name) AS parent_name
+                CONCAT(p.first_name, ' ', p.last_name) AS parent_name,
+                w.sort_number AS sort_number
             FROM attendance a
             JOIN students s ON s.id = a.studentid
             JOIN users p ON p.id = s.parentid
+            JOIN waypoints w ON w.studentid = s.id
             WHERE a.routeid = $1
             AND a.attendance_date = (now() AT TIME ZONE $2)::date
-            ORDER BY s.id`,
+            ORDER BY w.sort_number`,
         [routeid, SCHOOL_TZ]
         );
 

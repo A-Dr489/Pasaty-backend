@@ -15,6 +15,6 @@ attendanceRouter.post("/:attendanceid/afternoon/absent", authenticateUser, requi
 attendanceRouter.patch("/:attendanceid/afternoon/dropoff", authenticateUser, requiredRole(ROLE.DRIVER), attendanceController.dropoffAfternoonStudent);
 attendanceRouter.post("/:routeid/afternoon/complete", authenticateUser, requiredRole(ROLE.DRIVER), attendanceController.completeAfternoon);
 attendanceRouter.patch("/:attendanceid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.adminOverride);
-attendanceRouter.post("/:routeid/attendance", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.routeAttendance);
+attendanceRouter.post("/:routeid/attendance", authenticateUser, requiredRole(ROLE.ADMIN, ROLE.DRIVER), attendanceController.routeAttendance);
 
 module.exports = attendanceRouter;
