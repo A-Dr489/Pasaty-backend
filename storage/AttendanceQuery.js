@@ -708,7 +708,7 @@ async function getAttendance(routeid, date) {
   const { rows } = await pool.query(
     `SELECT a.id AS attendanceid, a.studentid AS id,
             s.first_name,
-            CONCAT(p.first_name, ' ', p.last_name) AS parent_name
+            CONCAT(p.first_name, ' ', p.last_name) AS parent_name,
             a.morning_status, a.afternoon_status
        FROM attendance a
        JOIN students s ON s.id = a.studentid
