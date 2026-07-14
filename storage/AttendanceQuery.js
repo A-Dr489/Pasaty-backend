@@ -721,6 +721,14 @@ async function getAttendance(routeid, date) {
   return rows;
 }
 
+//MVP
+async function restartTrip(routeid) {
+  return withTransaction(async (client) => {
+    await client.query("UPDATE routes SET morning_status = null, afternoon_status = null, morning_started_at = NULL, afternoon_started_at = NULL, morning_completed_at = NULL, afternoon_completed_at = NULL WHERE id = $1", [routeid]);
+    await client.query("DELETE FROM attendance WHERE routeid = $1", [routeid]);
+  });
+}
+
 module.exports = {
     startMorningRoute,
     boardMorning,
@@ -732,5 +740,6 @@ module.exports = {
     completeAfternoonRoute,
     absentAfternoon,
     adminOverrideAttendance,
-    getAttendance
+    getAttendance,
+    restartTrip
 }

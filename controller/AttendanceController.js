@@ -266,3 +266,17 @@ exports.routeAttendance = async (req, res, next) => {
       next(err);
     }
 }
+
+//MVP
+exports.restartTrip = async (req, res, next) => {
+  try {
+    const routeid = Number(req.params.routeid);
+    if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
+    await db.restartTrip(routeid);
+
+    res.json({message: "Done!"});
+  } catch (err) {
+    console.log("Server Error (restartTrip): " + err);
+    next(err);
+  }
+}
