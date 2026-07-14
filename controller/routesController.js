@@ -74,6 +74,9 @@ exports.saveDraft = async (req, res) => {
 exports.getRoutes = async (req, res) => {
     try {
         const { routeid, coordinates } = req.body;
+        if(!routeid || !coordinates) {
+           return res.status(400).json({message: "Insuffecient Data"});
+        }
         const routeWithDistance = await db.getRouteWithDistance(routeid);
         if(routeWithDistance[0].has_distance) {
             return res.json({routes: routeWithDistance[0]});
