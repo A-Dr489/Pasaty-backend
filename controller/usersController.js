@@ -1,5 +1,6 @@
 const db = require("../storage/usersQuery.js");
 const { isPhoneNumber } = require("../utils/functions.js");
+const { httpError } = require("../utils/functions.js");
 
 exports.getAllUsers = async (req, res) => {
     try{
@@ -42,15 +43,16 @@ exports.updateUser = async (req, res) => {
     }
 }
 
-exports.deleteStudent = async (req, res) => {
-    const studentid = req.params.id;
+exports.deleteStudent = async (req, res, next) => {
     try {
-        await db.deleteStudentById(studentid);
+        const studentid = req.params.id;
+        const isDeleted = await db.deleteStudentById(studentid);
+        if(!isDeleted) throw httpError(400, "Delete the student's waypoint first");
 
         res.json({message: "Done!"});
-    } catch(e) {
-        console.log("Server Error (deleteStudent): " + e);
-        res.status(500).json({message: "Internal Server Error"});
+    } catch(err) {
+        console.log("Server Error (deleteStudent): " + err);
+        next(err);
     }
 }
 
@@ -93,5 +95,73 @@ exports.searchUser = async (req, res) => {
     } catch(e) {
         console.log("Server Error (searchUser): " + e);
         res.status(500).json({message: "Internal Server Error"});
+    }
+}
+
+exports.getStudents = async (req, res, next) => {
+    try{
+        const rows = await db.getAllStudents();
+        if(rows.length === 0) throw httpError(404, "No students found");
+
+        res.json({students: rows});
+    } catch(err) {
+        console.log("Server Error (getStudents): " + err);
+        next(err);
+    }
+}
+
+exports.updateStudent = async (req, res, next) => {
+    const { first_name } = req.body;
+    const studentid = req.params.studentid;
+    try{
+        if(!studentid || !first_name) throw httpError(400, "Insufficient Data") 
+        await db.updateStudent(studentid, first_name);
+
+        res.json({message: "Done!"});
+    } catch(err) {
+        console.log("Server Error (updateStudent): " + err);
+        next(err);
+    }
+}
+
+exports.searchStudent = async (req, res, next) => {
+    try{
+        const { search } = req.body;
+        if (!search || search.trim() === '') throw httpError(400, "The search was empty!");
+        const query = search.trim();
+        const rows = await db.searchStudent(query);
+        if(rows.length === 0) throw httpError(404, "Nothing found");
+
+        res.json({students: rows});
+    } catch(err) {
+        console.log("Server Error (searchStudent): " + err);
+        next(err);
+    }
+}
+
+exports.searchParent = async (req, res, next) => {
+    try{
+        const searchedName = req.params.name;
+        const rows = await db.searchParentName(searchedName);
+        if(rows.length === 0) throw httpError(404, "No parent found")
+
+        res.json({parents: rows});
+    } catch(err) {
+        console.log("Server Error (searchParent): " + err);
+        next(err);
+    }
+}
+
+exports.updateStudentParent = async (req, res, next) => {
+    try{
+        const { parentid } = req.body;
+        const studentid = req.params.studentid;
+        if(!parentid) throw httpError(400, "No parent provided");
+        await db.updateStudentParent(parentid, studentid);
+
+        res.json({message: "Done!"});
+    } catch(err) {
+        console.log("Server Error (updateStudentParent): " + err);
+        next(err);
     }
 }

@@ -3,7 +3,7 @@ const pool = require("./pool.js");
 const SCHOOL_TZ = process.env.SCHOOL_TZ;
 
 async function getUserById(id) {
-    const { rows } = await pool.query("SELECT id, first_name, last_name, phone, createdat FROM users WHERE id = $1", [id]);
+    const { rows } = await pool.query("SELECT id, first_name, last_name, phone, role, createdat FROM users WHERE id = $1", [id]);
     return rows;
 }
 

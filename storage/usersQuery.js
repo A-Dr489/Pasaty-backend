@@ -44,7 +44,17 @@ async function updateUser(userid, Fname, Lname, phone, role, students) {
 }
 
 async function deleteStudentById(id) {
-    await pool.query("DELETE FROM students WHERE id = $1", [id]);
+    const { rowCount } = await pool.query(`
+        DELETE FROM students s 
+        WHERE id = $1
+        AND NOT EXISTS (
+            SELECT 1
+            FROM waypoints w
+            WHERE w.studentid = s.id
+        )`
+    , [id]);
+
+    return rowCount > 0;
 }
 
 async function deleteUserById(userid) {
@@ -75,6 +85,55 @@ async function searchByString(query) {
     return rows;
 }
 
+async function getAllStudents() {
+    const { rows } = await pool.query(`
+        SELECT s.id, s.first_name, s.parentid, s.routeid,
+        CONCAT(u.first_name, ' ', u.last_name) AS parent_name,
+        u.phone
+        FROM students s
+        JOIN users u ON s.parentid = u.id
+    `);
+
+    return rows;
+}
+
+async function updateStudent(studentid, first_name) {
+    await pool.query("UPDATE students SET first_name = $2 WHERE id = $1", [studentid, first_name]);
+}
+
+async function searchStudent(query) {
+    const cleanQuery = `%${query}%`;
+    const { rows } = await pool.query(`
+        SELECT s.id, s.first_name, s.routeid, s.parentid,
+        u.first_name AS parent_first, u.last_name AS parent_last, CONCAT(u.first_name, ' ', u.last_name) AS parent_name, u.phone
+        FROM students s
+        LEFT JOIN users u ON u.id = s.parentid
+        WHERE s.first_name ILIKE $1
+         OR u.first_name ILIKE $1
+         OR u.last_name ILIKE $1
+         OR CONCAT(u.first_name, ' ', u.last_name) ILIKE $1
+        ORDER BY s.id
+    `, [cleanQuery]);
+
+    return rows;
+}
+
+async function searchParentName(name) {
+    const cleanName = `%${name}%`;
+    const { rows } = await pool.query(`
+        SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) as full_name, phone
+        FROM users u
+        WHERE CONCAT(u.first_name, ' ', u.last_name) ILIKE $1
+        AND u.role = 'parent'
+        LIMIT 10;
+    `, [cleanName]);
+    return rows;
+}
+
+async function updateStudentParent(parentid, studentid) {
+    await pool.query("UPDATE students SET parentid = $1 WHERE id = $2", [parentid, studentid]);
+}
+
 module.exports = {
     getAllUsers,
     getStudentFromParentId,
@@ -82,5 +141,10 @@ module.exports = {
     deleteStudentById,
     deleteUserById,
     searchByPhone,
-    searchByString
+    searchByString,
+    getAllStudents,
+    updateStudent,
+    searchStudent,
+    searchParentName,
+    updateStudentParent
 }
