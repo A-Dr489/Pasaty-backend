@@ -14,5 +14,6 @@ routesRouter.get("/search/student/:name", authenticateUser, requiredRole(ROLE.AD
 routesRouter.delete("/:id", authenticateUser, requiredRole(ROLE.ADMIN), routesController.deleteRoute);
 routesRouter.get("/search/driver/:name", authenticateUser, requiredRole(ROLE.ADMIN), routesController.searchDriver);
 routesRouter.put("/driver", authenticateUser, requiredRole(ROLE.ADMIN), routesController.updateRoutesDriver);
+routesRouter.get("/driver/route/:routeid", authenticateUser, requiredRole(ROLE.DRIVER), routesController.getDriverRoute);
 
 module.exports = routesRouter;

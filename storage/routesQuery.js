@@ -1,5 +1,6 @@
 const pool = require("./pool.js");
 const format = require("pg-format");
+const { httpError } = require("../utils/functions.js");
 
 async function addRouteName(name) {
     const { rows } = await pool.query("INSERT INTO routes (name) VALUES ($1) RETURNING id", [name]);
@@ -210,6 +211,40 @@ async function updateDriver(userid, routeid) {
     await pool.query("UPDATE routes SET driverid = $1 WHERE id = $2", [userid, routeid]);
 }
 
+async function getDriverRoute(routeid, driverid) {
+    const client = await pool.connect();
+    try{
+        await client.query("BEGIN");
+        const { rows: routeData } = await client.query(`
+            SELECT id, name, geo, distance, duration, updatedat, driverid
+            FROM routes r
+            WHERE id = $1
+            AND driverid = $2
+        `, [routeid, driverid]);
+
+        if(driverid != routeData[0].driverid) {
+            throw httpError(403, 'Driver not assigned to this route');
+        }
+        if(routeData.length === 0) throw httpError(404, "No route found");
+
+        const { rows: waypoints } = await client.query(`
+            SELECT *
+            FROM waypoints
+            WHERE routeid = $1    
+        `, [routeid]);
+
+        if(waypoints.length === 0) throw httpError(404, "No waypoint found");
+
+        await client.query("COMMIT");
+        return {routeData: routeData, waypoints: waypoints};
+    } catch(e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
+}
+
 module.exports = {
     addRouteName,
     getAllRoutes,
@@ -221,5 +256,6 @@ module.exports = {
     searchStudentName,
     deleteRouteById,
     searchDriverName,
-    updateDriver
+    updateDriver,
+    getDriverRoute
 }

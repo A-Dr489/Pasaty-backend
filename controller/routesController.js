@@ -1,5 +1,6 @@
 const db = require("../storage/routesQuery.js");
 const axios = require("axios");
+const { httpError } = require("../utils/functions.js");
 
 //in the create route path in the admin portal
 exports.postRoute = async (req, res) => {
@@ -36,8 +37,8 @@ exports.getAllRoutes = async (req, res) => {
 }
 
 exports.getRouteWaypoints = async (req, res) => {
-    const routeid = req.params.id;
     try {
+        const routeid = req.params.id;
         const rows = await db.getWaypointsByRoute(routeid);
         const data = rows.waypoints[0];
         if (!data.route_exists) {
@@ -178,5 +179,19 @@ exports.updateRoutesDriver = async (req, res) => {
     } catch(e) {
         console.log("Server Error (updateRoutesDriver): " + e);
         res.status(500).json({message: "Internal Server Error"});
+    }
+}
+
+exports.getDriverRoute = async (req, res, next) => {
+    try{
+        const routeid = Number(req.params.routeid);
+        if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
+
+        const { routeData, waypoints } = await db.getDriverRoute(routeid, req.user.userid);
+
+        res.json({route: routeData[0], waypoints: waypoints});
+    } catch(err) {
+        console.log("Server Error (getDriverRoute): " + err);
+        next(err);
     }
 }
