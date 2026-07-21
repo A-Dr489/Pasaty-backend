@@ -17,8 +17,8 @@ exports.getAllUsers = async (req, res) => {
 }
 
 exports.getStudentFromParent = async (req, res) => {
-    const parentid = req.params.id;
     try{
+        const parentid = req.params.id;
         const rows = await db.getStudentFromParentId(parentid);
         if(rows.length === 0) {
             return res.status(404).json({message: "No students assigned"});
@@ -111,11 +111,12 @@ exports.getStudents = async (req, res, next) => {
 }
 
 exports.updateStudent = async (req, res, next) => {
-    const { first_name } = req.body;
-    const studentid = req.params.studentid;
     try{
-        if(!studentid || !first_name) throw httpError(400, "Insufficient Data") 
-        await db.updateStudent(studentid, first_name);
+        const { first_name, schoolid } = req.body;
+        const cleanName = first_name.trim();
+        const studentid = req.params.studentid;
+        if(!studentid || !cleanName || !schoolid) throw httpError(400, "Insufficient Data") 
+        await db.updateStudent(studentid, cleanName, schoolid);
 
         res.json({message: "Done!"});
     } catch(err) {

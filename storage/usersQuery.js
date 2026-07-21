@@ -7,7 +7,12 @@ async function getAllUsers(id) {
 }
 
 async function getStudentFromParentId(parentid) {
-    const { rows } = await pool.query("SELECT * FROM students WHERE parentid = $1", [parentid]);
+    const { rows } = await pool.query(`
+        SELECT s.*, sk.name AS school_name
+        FROM students s
+        LEFT JOIN school sk ON s.schoolid = sk.id
+        WHERE parentid = $1
+    `, [parentid]);
     return rows;
 }
 
@@ -26,11 +31,12 @@ async function updateUser(userid, Fname, Lname, phone, role, students) {
             `
                 INSERT INTO students (
                     first_name,
-                    parentid
+                    parentid,
+                    schoolid
                 )
-                VALUES ($1, $2)
+                VALUES ($1, $2, $3)
             `,
-            [student.first_name, userid],
+            [student.first_name, userid, student.schoolid],
           );
         }
 
@@ -87,18 +93,19 @@ async function searchByString(query) {
 
 async function getAllStudents() {
     const { rows } = await pool.query(`
-        SELECT s.id, s.first_name, s.parentid, s.routeid,
+        SELECT s.id, s.first_name, s.parentid, s.routeid, s.schoolid, sk.name AS school_name,
         CONCAT(u.first_name, ' ', u.last_name) AS parent_name,
         u.phone
         FROM students s
         JOIN users u ON s.parentid = u.id
+        LEFT JOIN school sk ON s.schoolid = sk.id
     `);
 
     return rows;
 }
 
-async function updateStudent(studentid, first_name) {
-    await pool.query("UPDATE students SET first_name = $2 WHERE id = $1", [studentid, first_name]);
+async function updateStudent(studentid, first_name, schoolid) {
+    await pool.query("UPDATE students SET first_name = $2, schoolid = $3 WHERE id = $1", [studentid, first_name, schoolid]);
 }
 
 async function searchStudent(query) {

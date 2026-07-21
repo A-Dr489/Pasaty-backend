@@ -20,11 +20,12 @@ async function addParent(Fname, Lname, phone, role, password, students) {
             `
                 INSERT INTO students (
                     first_name,
-                    parentid
+                    parentid,
+                    schoolid
                 )
-                VALUES ($1, $2)
+                VALUES ($1, $2, $3)
             `,
-            [student.first_name,  parentid],
+            [student.first_name,  parentid, student.schoolid],
           );
         }
 

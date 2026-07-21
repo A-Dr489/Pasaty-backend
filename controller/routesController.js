@@ -4,9 +4,9 @@ const { httpError } = require("../utils/functions.js");
 
 //in the create route path in the admin portal
 exports.postRoute = async (req, res) => {
-    const { name } = req.body;
     try {
-        const rows = await db.addRouteName(name);
+        const { name, schoolid } = req.body;
+        const rows = await db.addRouteName(name, schoolid);
         if(rows.length === 0) {
             return res.status(404).json({message: "Something went wrong when getting the route"});
         }
@@ -192,6 +192,39 @@ exports.getDriverRoute = async (req, res, next) => {
         res.json({route: routeData[0], waypoints: waypoints});
     } catch(err) {
         console.log("Server Error (getDriverRoute): " + err);
+        next(err);
+    }
+}
+
+exports.getRouteById = async (req, res, next) => {
+    try{
+        const routeid = Number(req.params.routeid);
+        if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
+        
+        const rows = await db.getRouteById(routeid);
+        if(rows.length === 0) throw httpError(404, "No route found");
+
+        res.json({route: rows[0]})
+    } catch(err) {
+        console.log("Server Error (getRouteById): " + err);
+        next(err);
+    }
+}
+
+exports.updateRoutesData = async (req, res, next) => {
+    try{
+        const {name, schoolid} = req.body;
+        const routeid = Number(req.params.routeid);
+        if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
+        if(!name) throw httpError(400, "Name must be provided");
+        if(!schoolid) throw httpError(400, "School name/id must be provided");
+        const cleanName = name.trim();
+
+        await db.updateRouteData(cleanName, schoolid, routeid);
+
+        res.json({message: "Done!"});
+    } catch(err) {
+        console.log("Server Error (updateRoutesData): " + err);
         next(err);
     }
 }

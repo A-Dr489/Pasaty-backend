@@ -10,6 +10,7 @@ const protectedRouter = require("./routes/protectedRouter.js");
 const usersRouter = require("./routes/usersRouter.js");
 const routesRouter = require("./routes/routesRouter.js");
 const attendanceRouter = require("./routes/AttendanceRouter.js");
+const dataRouter = require("./routes/dataRouter.js");
 const { socketHandler } = require("./sockets/socketHandler.js");
 const { httpError } = require("./utils/functions.js");
 const pool = require("./storage/pool.js");
@@ -31,6 +32,7 @@ app.use(cookieParser());
 app.use("/v1/auth", authRouter);
 app.use("/v1/protected", protectedRouter);
 app.use("/v1/users", usersRouter);
+app.use("/v1/data", dataRouter);
 app.use("/v1/routes", routesRouter);
 app.use("/v1/attendance", attendanceRouter);
 app.get("/test", async (req, res) => {

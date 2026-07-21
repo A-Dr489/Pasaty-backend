@@ -2,13 +2,19 @@ const pool = require("./pool.js");
 const format = require("pg-format");
 const { httpError } = require("../utils/functions.js");
 
-async function addRouteName(name) {
-    const { rows } = await pool.query("INSERT INTO routes (name) VALUES ($1) RETURNING id", [name]);
+async function addRouteName(name, schoolid) {
+    const { rows } = await pool.query("INSERT INTO routes (name, schoolid) VALUES ($1, $2) RETURNING id", [name, schoolid]);
     return rows;
 }
 
 async function getAllRoutes() {
-    const { rows } = await pool.query("SELECT id, name, updatedat FROM routes ORDER BY id DESC");
+    const { rows } = await pool.query(`
+        SELECT r.id, r.name, r.updatedat, r.schoolid,
+        s.name AS school_name 
+        FROM routes r 
+        LEFT JOIN school s ON s.id = r.schoolid
+        ORDER BY r.id DESC    
+    `);
     return rows;
 }
 
@@ -245,6 +251,21 @@ async function getDriverRoute(routeid, driverid) {
     }
 }
 
+async function getRouteById(routeid) {
+    const { rows } = await pool.query(`
+        SELECT r.id, r.name, r.schoolid, 
+        s.name AS school_name
+        FROM routes r
+        LEFT JOIN school s ON r.schoolid = s.id 
+        WHERE r.id = $1
+    `, [routeid]);
+    return rows;
+}
+
+async function updateRouteData(name, schoolid, routeid) {
+    await pool.query("UPDATE routes SET name = $1, schoolid = $2 WHERE id = $3", [name, schoolid, routeid])
+} 
+
 module.exports = {
     addRouteName,
     getAllRoutes,
@@ -257,5 +278,7 @@ module.exports = {
     deleteRouteById,
     searchDriverName,
     updateDriver,
-    getDriverRoute
+    getDriverRoute,
+    getRouteById,
+    updateRouteData
 }
