@@ -7,13 +7,26 @@ async function getUserById(id) {
     return rows;
 }
 
+//get student by parent id
 async function getStudentById(id) {
-    const { rows } = await pool.query("SELECT * FROM students WHERE parentid = $1", [id]);
+    const { rows } = await pool.query(`
+        SELECT s.*,
+        sk.name AS school_name, sk.supervisor, sk.supervisor_phone, sk.city  
+        FROM students s
+        LEFT JOIN school sk ON s.schoolid = sk.id 
+        WHERE parentid = $1
+    `, [id]);
     return rows;
 }
 
 async function getRoutesByDriverId(driverid) {
-    const { rows } = await pool.query("SELECT id, name FROM routes WHERE driverid = $1", [driverid])
+    const { rows } = await pool.query(`
+        SELECT r.id, r.name, r.schoolid,
+        s.name AS school_name, s.supervisor, s.supervisor_phone, s.city
+        FROM routes r 
+        JOIN school s ON r.schoolid = s.id
+        WHERE driverid = $1
+    `, [driverid]);
     return rows;
 }
 
