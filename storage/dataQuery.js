@@ -22,7 +22,22 @@ async function searchSchoolByName(name) {
     return rows;
 }
 
+async function getSchools() {
+    const { rows } = await pool.query("SELECT * FROM school");
+    return rows;
+}
+
+async function updateSchool(schoolid, name, supervisor, phone, city) {
+    await pool.query(`
+        UPDATE school 
+        SET name = $2, supervisor = $3, supervisor_phone = $4, city = $5
+        WHERE id = $1
+    `, [schoolid, name, supervisor, phone, city]);
+}
+
 module.exports = {
     addSchool,
-    searchSchoolByName
+    searchSchoolByName,
+    getSchools,
+    updateSchool
 }
