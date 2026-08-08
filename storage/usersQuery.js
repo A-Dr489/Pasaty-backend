@@ -1,4 +1,5 @@
 const pool = require("./pool.js");
+const { httpError } = require("../utils/functions.js");
 
 //Returns all the users except yourself (Admin)
 async function getAllUsers(id) {
@@ -20,6 +21,23 @@ async function updateUser(userid, Fname, Lname, phone, role, students) {
     const client = await pool.connect();
     try{
         await client.query("BEGIN");
+
+        const { rows } = await client.query(
+            `
+                SELECT r.id AS routeid, r.name AS route_name
+                FROM users u
+                JOIN routes r ON r.driverid = u.id
+                WHERE u.id = $1
+                AND u.role = 'driver'
+                AND $2 <> 'driver'
+                LIMIT 1
+            `,
+            [userid, role]
+        );
+
+        if (rows.length > 0) {
+            throw httpError(400, "This driver is already assigned to the route: " + rows[0].route_name);
+        }
 
         await client.query(
           "UPDATE users SET first_name = $1, last_name = $2, phone = $3, role = $4 WHERE id = $5",

@@ -31,15 +31,15 @@ exports.getStudentFromParent = async (req, res) => {
     }
 }
 
-exports.updateUser = async (req, res) => {
+exports.updateUser = async (req, res, next) => {
     const {first_name, last_name, phone, role, students} = req.body;
     const userid = req.params.id;
     try {
         await db.updateUser(userid, first_name, last_name, phone, role, students);
         res.json({message: "Done!"});
-    } catch(e) {
-        console.log("Server Error (updateUser): " + e);
-        res.status(500).json({message: "Internal Server Error"});
+    } catch(err) {
+        console.log("Server Error (updateUser): " + err);
+        next(err)
     }
 }
 
