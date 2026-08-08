@@ -9,4 +9,8 @@ dataRouter.get("/school/:name", authenticateUser, requiredRole(ROLE.ADMIN), data
 dataRouter.get("/schools", authenticateUser, requiredRole(ROLE.ADMIN), dataController.getAllSchools);
 dataRouter.put("/school/:schoolid", authenticateUser, requiredRole(ROLE.ADMIN), dataController.updateSchool);
 
+dataRouter.post("/overview", authenticateUser, requiredRole(ROLE.ADMIN), dataController.getOverview);
+dataRouter.post("/overview/routes", authenticateUser, requiredRole(ROLE.ADMIN), dataController.getRouteBoard);
+dataRouter.post("/overview/attendance", authenticateUser, requiredRole(ROLE.ADMIN), dataController.getAttendanceTrend);
+
 module.exports = dataRouter;
