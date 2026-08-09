@@ -70,7 +70,7 @@ async function getOverview(date, phase) {
 
     const COUNTS_SQL = `
     SELECT
-        (SELECT COUNT(*) FROM students WHERE status = 'ACTIVE')::int AS "students",
+        (SELECT COUNT(*) FROM students)::int                         AS "students",
         (SELECT COUNT(*) FROM routes)::int                           AS "routes",
         (SELECT COUNT(*) FROM users WHERE role = 'Driver')::int      AS "drivers",
         (SELECT COUNT(*) FROM users WHERE role = 'Parent')::int      AS "parents",

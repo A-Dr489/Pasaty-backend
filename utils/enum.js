@@ -1,11 +1,11 @@
-export const ROLE = {
+const ROLE = {
     ADMIN: "admin",
     USER: "user",
     PARENT: "parent",
     DRIVER: "driver"
 }
 
-export const SOCKET_EVENT = {
+const SOCKET_EVENT = {
     JOIN: "route:join",
     LEAVE: "route:leave",
     ATTENDANCE_MORNING_START: "attendance:morning_started",
@@ -16,16 +16,23 @@ export const SOCKET_EVENT = {
     ATTENDANCE_ADMIN_OVERRIDE: "attendance:admin_override"
 }
 
-export const ROUTE_STATUS = {
+const ROUTE_STATUS = {
     IN_PROGRESS: 'IN_PROGRESS',
     CANCELLED: 'CANCELLED',
     COMPLETED: 'COMPLETED'
 }
 
-export const ATTENDANCE_STATUS = {
+const ATTENDANCE_STATUS = {
     WAITING: 'WAITING',
     BOARDED: 'BOARDED',
     ARRIVED: 'ARRIVED',
     ABSENT: 'ABSENT',
     DROPPED_OFF: 'DROPPED_OFF'
+}
+
+module.exports = {
+    ROLE,
+    SOCKET_EVENT,
+    ROUTE_STATUS,
+    ATTENDANCE_STATUS
 }

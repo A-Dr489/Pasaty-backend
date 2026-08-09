@@ -1,6 +1,10 @@
-import { SOCKET_EVENT } from "../utils/enum.js";
-import { authenticateSocket } from "../utils/authMiddleware.js";
-import { Server } from 'socket.io';
+// import { SOCKET_EVENT } from "../utils/enum.js";
+// import { authenticateSocket } from "../utils/authMiddleware.js";
+// import { Server } from 'socket.io';
+
+const { SOCKET_EVENT } = require("../utils/enum.js");
+const { authenticateSocket } = require("../utils/authMiddleware.js");
+const { Server } = require("socket.io");
 
 let io = null;
 

@@ -57,7 +57,7 @@ exports.updateSchool = async (req, res, next) => {
         await db.updateSchool(schoolid, cleanName, cleanSupervisor, supervisor_phone, city);
 
         res.json({message: "Done!"});
-    } catch(e) {
+    } catch(err) {
         console.log("Server Error (updateSchool): " + err);
         next(err);
     }

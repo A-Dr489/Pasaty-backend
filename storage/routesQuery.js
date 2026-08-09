@@ -228,10 +228,10 @@ async function getDriverRoute(routeid, driverid) {
             AND driverid = $2
         `, [routeid, driverid]);
 
+        if(routeData.length === 0) throw httpError(404, "No route found");
         if(driverid != routeData[0].driverid) {
             throw httpError(403, 'Driver not assigned to this route');
         }
-        if(routeData.length === 0) throw httpError(404, "No route found");
 
         const { rows: waypoints } = await client.query(`
             SELECT *

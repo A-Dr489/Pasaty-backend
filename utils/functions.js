@@ -1,4 +1,4 @@
-export const isPhoneNumber = (input) => {
+const isPhoneNumber = (input) => {
     // Allows digits, spaces, +, -, and ()
     const phoneRegex = /^[0-9+\-()\s]+$/;
     const digitCount = input.replace(/\D/g, '').length;
@@ -7,11 +7,17 @@ export const isPhoneNumber = (input) => {
     return phoneRegex.test(input) && digitCount >= 2;
 };
 
-export class HttpError extends Error {
+class HttpError extends Error {
   constructor(status, message) {
     super(message);
     this.status = status;
   }
 }
 
-export const httpError = (status, message) => new HttpError(status, message);
+const httpError = (status, message) => new HttpError(status, message);
+
+module.exports = {
+  isPhoneNumber,
+  HttpError,
+  httpError
+}
