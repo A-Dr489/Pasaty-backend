@@ -1,5 +1,6 @@
 const pool = require("./pool.js");
 const { httpError } = require("../utils/functions.js");
+const { ROLE } = require("../utils/enum.js");
 
 //Returns all the users except yourself (Admin)
 async function getAllUsers(id) {
@@ -159,6 +160,92 @@ async function updateStudentParent(parentid, studentid) {
     await pool.query("UPDATE students SET parentid = $1 WHERE id = $2", [parentid, studentid]);
 }
 
+//Live bus location
+
+//Who owns this route and is it actually on a run right now.
+async function getRouteOwnership(routeid) {
+    const { rows } = await pool.query(`
+        SELECT id, driverid, morning_status, afternoon_status
+        FROM routes
+        WHERE id = $1
+    `, [routeid]);
+    return rows;
+}
+
+/*
+    One row per route, overwritten on every ping.
+    The WHERE on the conflict branch drops out-of-order pings: a phone that
+    lost signal flushes its buffered fixes all at once, and the newest one
+    must not be replaced by an older one arriving a moment later.
+    No row returned = the ping was stale and nothing changed.
+*/
+async function upsertDriverLocation(driverid, location) {
+    const { rows } = await pool.query(`
+        INSERT INTO driver_location
+            (routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+        ON CONFLICT (routeid) DO UPDATE
+        SET driverid = EXCLUDED.driverid,
+            latitude = EXCLUDED.latitude,
+            longitude = EXCLUDED.longitude,
+            accuracy = EXCLUDED.accuracy,
+            speed = EXCLUDED.speed,
+            heading = EXCLUDED.heading,
+            recorded_at = EXCLUDED.recorded_at,
+            updated_at = now()
+        WHERE EXCLUDED.recorded_at > driver_location.recorded_at
+        RETURNING routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at
+    `, [
+        location.routeid,
+        driverid,
+        location.latitude,
+        location.longitude,
+        location.accuracy,
+        location.speed,
+        location.heading,
+        location.recorded_at
+    ]);
+    return rows;
+}
+
+async function getDriverLocation(routeid) {
+    const { rows } = await pool.query(`
+        SELECT routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at
+        FROM driver_location
+        WHERE routeid = $1
+    `, [routeid]);
+    return rows;
+}
+
+/*
+    Who may watch a route room: an admin sees every route, a driver only the
+    routes assigned to them, a parent only a route one of their students rides.
+    Any other role gets nothing.
+*/
+async function canAccessRoute(userid, role, routeid) {
+    if(role === ROLE.ADMIN) {
+        return true;
+    }
+
+    if(role === ROLE.DRIVER) {
+        const { rowCount } = await pool.query(
+            "SELECT 1 FROM routes WHERE id = $1 AND driverid = $2",
+            [routeid, userid]
+        );
+        return rowCount > 0;
+    }
+
+    if(role === ROLE.PARENT) {
+        const { rowCount } = await pool.query(
+            "SELECT 1 FROM students WHERE routeid = $1 AND parentid = $2 LIMIT 1",
+            [routeid, userid]
+        );
+        return rowCount > 0;
+    }
+
+    return false;
+}
+
 module.exports = {
     getAllUsers,
     getStudentFromParentId,
@@ -171,5 +258,9 @@ module.exports = {
     updateStudent,
     searchStudent,
     searchParentName,
-    updateStudentParent
+    updateStudentParent,
+    getRouteOwnership,
+    upsertDriverLocation,
+    getDriverLocation,
+    canAccessRoute
 }

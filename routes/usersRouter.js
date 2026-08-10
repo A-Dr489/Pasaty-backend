@@ -15,5 +15,6 @@ usersRouter.put("/student/:studentid", authenticateUser, requiredRole(ROLE.ADMIN
 usersRouter.post("/students/search", authenticateUser, requiredRole(ROLE.ADMIN), usersController.searchStudent);
 usersRouter.get("/parent/:name", authenticateUser, requiredRole(ROLE.ADMIN), usersController.searchParent);
 usersRouter.put("/student/parent/:studentid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.updateStudentParent)
+usersRouter.get("/location/:routeid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getBusLocation);
 
 module.exports = usersRouter;

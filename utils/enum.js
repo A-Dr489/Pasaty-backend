@@ -13,7 +13,10 @@ const SOCKET_EVENT = {
     ATTENDANCE_MORNING_COMPLETE: "route:morning_completed",
     ATTENDANCE_AFTERNOON_START: "attendance:afternoon_started",
     ATTENDANCE_AFTERNOON_COMPLETE: "route:afternoon_completed",
-    ATTENDANCE_ADMIN_OVERRIDE: "attendance:admin_override"
+    ATTENDANCE_ADMIN_OVERRIDE: "attendance:admin_override",
+    DRIVER_LOCATION: "driver:location",   //driver -> server
+    BUS_LOCATION: "bus:location",         //server -> route room
+    ROOM_ERROR: "route:error"             //server -> the socket that asked
 }
 
 const ROUTE_STATUS = {
