@@ -16,7 +16,13 @@ const SOCKET_EVENT = {
     ATTENDANCE_ADMIN_OVERRIDE: "attendance:admin_override",
     DRIVER_LOCATION: "driver:location",   //driver -> server
     BUS_LOCATION: "bus:location",         //server -> route room
+    ETA_UPDATED: "eta:updated",           //server -> route room
     ROOM_ERROR: "route:error"             //server -> the socket that asked
+}
+
+const PHASE = {
+    MORNING: 'morning',
+    AFTERNOON: 'afternoon'
 }
 
 const ROUTE_STATUS = {
@@ -36,6 +42,7 @@ const ATTENDANCE_STATUS = {
 module.exports = {
     ROLE,
     SOCKET_EVENT,
+    PHASE,
     ROUTE_STATUS,
     ATTENDANCE_STATUS
 }

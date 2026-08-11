@@ -2,7 +2,9 @@ const db = require("../storage/usersQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
 const { isPhoneNumber } = require("../utils/functions.js");
 const { httpError, socketOk, socketError } = require("../utils/functions.js");
-const { ROLE, ROUTE_STATUS, SOCKET_EVENT } = require("../utils/enum.js");
+const { ROLE, ROUTE_STATUS, SOCKET_EVENT, PHASE } = require("../utils/enum.js");
+const { snapToLine } = require("../utils/geo.js");
+const { buildEstimate } = require("../utils/eta.js");
 
 exports.getAllUsers = async (req, res) => {
     try{
@@ -229,6 +231,80 @@ function cleanLocation(payload) {
     };
 }
 
+//A fix can land a few metres behind the last one without the bus reversing.
+const GPS_JITTER_M = 40;
+//Fast enough that no bus outruns the search window, slow enough that the
+//window still means something after a long silence.
+const MAX_PLAUSIBLE_SPEED_MS = 30;
+const MIN_FORWARD_WINDOW_M = 200;
+
+/*
+    Places the bus on the route line and works out who it is still coming for.
+
+    The afternoon runs the morning line backwards, so for that phase the line
+    itself is reversed before anything is measured. Every station downstream
+    then means the same thing in both phases - distance covered since this run
+    began - and nothing has to branch on direction. When a real afternoon
+    geometry replaces the mirrored one, only the line chosen here changes.
+*/
+async function estimateRoute(route, phase, location, previous, now) {
+    const coordinates = route.geo?.coordinates ?? [];
+    if(coordinates.length < 2) return null;
+
+    const line = phase === PHASE.AFTERNOON ? [...coordinates].reverse() : coordinates;
+
+    /*
+        Only carry progress forward within the same phase. Starting the
+        afternoon leaves the bus at the far end of the morning's line, and
+        treating that as its position would strand it there for the whole run.
+    */
+    const carried = previous && previous.phase === phase && previous.station !== null
+        ? Number(previous.station)
+        : null;
+
+    const secondsSincePrevious = previous
+        ? (location.recorded_at.getTime() - new Date(previous.recorded_at).getTime()) / 1000
+        : null;
+
+    const window = carried === null ? {} : {
+        fromStation: carried,
+        backward: GPS_JITTER_M,
+        /*
+            Widens with the gap since the last fix. A phone that lost signal
+            for five minutes comes back far down the road, and a fixed window
+            would refuse to believe it had moved.
+        */
+        forward: Math.max(
+            MIN_FORWARD_WINDOW_M,
+            (secondsSincePrevious ?? 0) * MAX_PLAUSIBLE_SPEED_MS + MIN_FORWARD_WINDOW_M
+        )
+    };
+
+    const hit = snapToLine(line, [location.longitude, location.latitude], window);
+    if(!hit) return null;
+
+    const stops = await db.getStopsForEta(route.id);
+    const startedAt = phase === PHASE.AFTERNOON ? route.afternoon_started_at : route.morning_started_at;
+
+    const estimate = buildEstimate({
+        routeid: route.id,
+        phase: phase,
+        busStation: hit.station,
+        //Stations are stored along the morning line, so the afternoon reads
+        //them from the other end.
+        stops: stops.map((stop) => ({
+            ...stop,
+            station: phase === PHASE.AFTERNOON ? hit.total - Number(stop.station) : Number(stop.station)
+        })),
+        plannedPace: route.duration > 0 ? route.distance / route.duration : null,
+        elapsedSeconds: startedAt ? (now - new Date(startedAt).getTime()) / 1000 : null,
+        snapOffset: hit.offset,
+        now: now
+    });
+
+    return { station: hit.station, offset: hit.offset, estimate: estimate };
+}
+
 exports.handleDriverLocation = async (socket, payload, ack) => {
     try {
         if(socket.user?.role !== ROLE.DRIVER) throw httpError(403, "Only a driver can report a location");
@@ -251,11 +327,39 @@ exports.handleDriverLocation = async (socket, payload, ack) => {
             || route.afternoon_status === ROUTE_STATUS.IN_PROGRESS;
         if(!running) throw httpError(409, "Route is not in progress");
 
-        const saved = await db.upsertDriverLocation(socket.user.userid, location);
+        const phase = route.morning_status === ROUTE_STATUS.IN_PROGRESS
+            ? PHASE.MORNING
+            : PHASE.AFTERNOON;
+
+        /*
+            Read before writing: the upsert overwrites the station this ping
+            has to be measured against, and that previous station is what keeps
+            a route which retraces itself from jumping to the wrong pass.
+        */
+        const previousRows = await db.getDriverLocation(location.routeid);
+        const geometryRows = await db.getRouteGeometry(location.routeid);
+
+        const now = Date.now();
+        const placed = geometryRows.length === 0
+            ? null
+            : await estimateRoute(geometryRows[0], phase, location, previousRows[0], now);
+
+        const saved = await db.upsertDriverLocation(socket.user.userid, {
+            ...location,
+            phase: phase,
+            station: placed ? placed.station : null,
+            snap_offset: placed ? placed.offset : null
+        });
         //Nothing back means the upsert guard dropped an out-of-order ping.
         if(saved.length === 0) return socketOk(ack, {stale: true});
 
         getIO().to(`route:${location.routeid}`).emit(SOCKET_EVENT.BUS_LOCATION, saved[0]);
+
+        //A route with no generated geometry still reports its position, it
+        //just cannot say when it will arrive anywhere.
+        if(placed) {
+            getIO().to(`route:${location.routeid}`).emit(SOCKET_EVENT.ETA_UPDATED, placed.estimate);
+        }
 
         socketOk(ack);
     } catch(err) {

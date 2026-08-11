@@ -141,6 +141,8 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
         }
 
         await client.query("UPDATE routes SET distance = NULL, duration = NULL, geo = NULL WHERE id = $1", [routeid]);
+        //The stations were measured against that geometry, so they die with it.
+        await client.query("UPDATE waypoints SET station = NULL, leg_distance = NULL, leg_duration = NULL WHERE routeid = $1", [routeid]);
 
         const { rows } = await client.query("SELECT * FROM waypoints WHERE routeid = $1", [routeid]);
         
@@ -154,9 +156,25 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
     }
 }
 
-async function updateRoutes(routeid, route) {
+//The stops in the order the bus drives them, which is the order their
+//coordinates are sent to Mapbox.
+async function getWaypointsInOrder(routeid) {
     const { rows } = await pool.query(`
-                UPDATE routes SET 
+        SELECT id, longitude, latitude, sort_number
+        FROM waypoints
+        WHERE routeid = $1
+        ORDER BY sort_number
+    `, [routeid]);
+    return rows;
+}
+
+async function updateRoutes(routeid, route, waypointGeometry = []) {
+    const client = await pool.connect();
+    try{
+        await client.query("BEGIN");
+
+        const { rows } = await client.query(`
+                UPDATE routes SET
                 geo = $1,
                 duration = $2,
                 distance = $3,
@@ -164,7 +182,41 @@ async function updateRoutes(routeid, route) {
                 WHERE id = $4
                 RETURNING geo, duration, distance
         `, [route.geometry, route.duration, route.distance, routeid]);
-    return rows;
+
+        /*
+            The stations go in the same transaction as the geometry they were
+            measured against. Committing one without the other would leave the
+            route pointing at a ruler that no longer matches its line.
+        */
+        if(waypointGeometry.length > 0) {
+            const stationValues = waypointGeometry.map((waypoint) => [
+                waypoint.id,
+                waypoint.station,
+                waypoint.leg_distance,
+                waypoint.leg_duration
+            ]);
+
+            const queryStations = format(`
+                UPDATE waypoints AS w
+                SET
+                    station = data.station::double precision,
+                    leg_distance = data.leg_distance::double precision,
+                    leg_duration = data.leg_duration::double precision
+                FROM (VALUES %L) AS data(id, station, leg_distance, leg_duration)
+                WHERE w.id = data.id::int;
+            `, stationValues);
+
+            await client.query(queryStations);
+        }
+
+        await client.query("COMMIT");
+        return rows;
+    } catch(e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
 }
 
 async function getRouteWithDistance(routeid) {
@@ -251,12 +303,15 @@ async function getDriverRoute(routeid, driverid) {
     }
 }
 
+//geo/distance/duration are here for the live view, which draws the line the
+//bus is being measured against. EditRoute ignores them.
 async function getRouteById(routeid) {
     const { rows } = await pool.query(`
-        SELECT r.id, r.name, r.schoolid, 
+        SELECT r.id, r.name, r.schoolid, r.geo, r.distance, r.duration,
+        r.morning_status, r.afternoon_status,
         s.name AS school_name
         FROM routes r
-        LEFT JOIN school s ON r.schoolid = s.id 
+        LEFT JOIN school s ON r.schoolid = s.id
         WHERE r.id = $1
     `, [routeid]);
     return rows;
@@ -271,6 +326,7 @@ module.exports = {
     getAllRoutes,
     getWaypointsByRoute,
     saveDraftChanges,
+    getWaypointsInOrder,
     updateRoutes,
     getRouteWithDistance,
     searchRouteName,

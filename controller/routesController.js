@@ -1,6 +1,75 @@
 const db = require("../storage/routesQuery.js");
 const axios = require("axios");
 const { httpError } = require("../utils/functions.js");
+const { snapToLine } = require("../utils/geo.js");
+
+/*
+    Works out where every stop sits on the line Mapbox just returned.
+
+    Stations come from snapping each stop onto the geometry rather than from
+    adding up the leg distances, because snapping is the same measurement the
+    bus will be judged by later and the two have to agree. Each stop is
+    searched forward of the one before it, so a route that retraces itself
+    cannot place a later stop at an earlier station.
+*/
+function buildWaypointGeometry(stops, directions) {
+    const route = directions.routes[0];
+    const coordinates = route.geometry?.coordinates ?? [];
+    const legs = Array.isArray(route.legs) ? route.legs : [];
+    //Where Mapbox pulled each coordinate we sent onto the road network.
+    const snappedInputs = Array.isArray(directions.waypoints) ? directions.waypoints : [];
+
+    /*
+        If the client sent a different number of coordinates than the route has
+        stored stops, index i in the response is not stop i and nothing from
+        Mapbox can be trusted positionally. Stations still come out right
+        because they are snapped from the stop's own coordinates.
+    */
+    const legsAligned = legs.length === stops.length - 1;
+    const inputsAligned = snappedInputs.length === stops.length;
+    if(!legsAligned || !inputsAligned) {
+        console.log(`getRoutes: ${legs.length} legs and ${snappedInputs.length} inputs for ${stops.length} stops, falling back to stored coordinates`);
+    }
+
+    let previousStation = null;
+
+    return stops.map((stop, index) => {
+        const snapped = inputsAligned ? snappedInputs[index]?.location : null;
+        const point = snapped ? snapped : [stop.longitude, stop.latitude];
+
+        const hit = snapToLine(coordinates, point, {
+            fromStation: previousStation === null ? 0 : previousStation
+        });
+        const station = hit ? hit.station : null;
+
+        //Taken from the gap between two stations so it can never disagree
+        //with the stations themselves.
+        const legDistance = (station === null || previousStation === null)
+            ? null
+            : station - previousStation;
+
+        let legDuration = null;
+        if(index > 0) {
+            if(legsAligned) {
+                legDuration = legs[index - 1].duration;
+            } else if(legDistance !== null && route.distance > 0) {
+                //Counts did not line up, so share the total time out by distance.
+                legDuration = route.duration * (legDistance / route.distance);
+            }
+        }
+
+        if(station !== null) previousStation = station;
+
+        return {
+            id: stop.id,
+            station: station,
+            leg_distance: legDistance,
+            leg_duration: legDuration
+        };
+    });
+}
+
+
 
 //in the create route path in the admin portal
 exports.postRoute = async (req, res) => {
@@ -96,7 +165,13 @@ exports.getRoutes = async (req, res) => {
             duration: result.duration,
             distance: result.distance
         }
-        const rows = await db.updateRoutes(routeid, route);
+
+        //Read back in sort_number order, the same order the coordinates above
+        //were built in, so a leg and a stop line up by index.
+        const stops = await db.getWaypointsInOrder(routeid);
+        const waypointGeometry = buildWaypointGeometry(stops, response.data);
+
+        const rows = await db.updateRoutes(routeid, route, waypointGeometry);
         if(rows.length === 0) {
             return res.status(404).json({message: "No routes found"});
         }

@@ -2,6 +2,8 @@ const pool = require("./pool.js");
 const { httpError } = require("../utils/functions.js");
 const { ROLE } = require("../utils/enum.js");
 
+const SCHOOL_TZ = process.env.SCHOOL_TZ;
+
 //Returns all the users except yourself (Admin)
 async function getAllUsers(id) {
     const { rows } = await pool.query("SELECT * FROM users WHERE id <> $1", [id]);
@@ -182,8 +184,8 @@ async function getRouteOwnership(routeid) {
 async function upsertDriverLocation(driverid, location) {
     const { rows } = await pool.query(`
         INSERT INTO driver_location
-            (routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+            (routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at, station, phase, snap_offset)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11)
         ON CONFLICT (routeid) DO UPDATE
         SET driverid = EXCLUDED.driverid,
             latitude = EXCLUDED.latitude,
@@ -192,9 +194,12 @@ async function upsertDriverLocation(driverid, location) {
             speed = EXCLUDED.speed,
             heading = EXCLUDED.heading,
             recorded_at = EXCLUDED.recorded_at,
-            updated_at = now()
+            updated_at = now(),
+            station = EXCLUDED.station,
+            phase = EXCLUDED.phase,
+            snap_offset = EXCLUDED.snap_offset
         WHERE EXCLUDED.recorded_at > driver_location.recorded_at
-        RETURNING routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at
+        RETURNING routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at, station, phase, snap_offset
     `, [
         location.routeid,
         driverid,
@@ -203,17 +208,56 @@ async function upsertDriverLocation(driverid, location) {
         location.accuracy,
         location.speed,
         location.heading,
-        location.recorded_at
+        location.recorded_at,
+        location.station ?? null,
+        location.phase ?? null,
+        location.snap_offset ?? null
     ]);
     return rows;
 }
 
 async function getDriverLocation(routeid) {
     const { rows } = await pool.query(`
-        SELECT routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at
+        SELECT routeid, driverid, latitude, longitude, accuracy, speed, heading, recorded_at, updated_at, station, phase, snap_offset
         FROM driver_location
         WHERE routeid = $1
     `, [routeid]);
+    return rows;
+}
+
+//The line every estimate on this route is measured against, plus the planned
+//pace and when the current run started.
+async function getRouteGeometry(routeid) {
+    const { rows } = await pool.query(`
+        SELECT id, geo, distance, duration,
+               morning_started_at, afternoon_started_at
+        FROM routes
+        WHERE id = $1
+    `, [routeid]);
+    return rows;
+}
+
+/*
+    Every student stop on the route that could still be waiting, with today's
+    attendance beside it. Stops with no station are left out: the geometry has
+    not been regenerated since they were added, so there is nowhere to place
+    them on the line.
+*/
+async function getStopsForEta(routeid) {
+    const { rows } = await pool.query(`
+        SELECT w.studentid, w.station, w.sort_number,
+               a.id AS attendanceid,
+               a.morning_status, a.afternoon_status
+        FROM waypoints w
+        LEFT JOIN attendance a
+            ON a.studentid = w.studentid
+            AND a.routeid = w.routeid
+            AND a.attendance_date = (now() AT TIME ZONE $2)::date
+        WHERE w.routeid = $1
+            AND w.studentid IS NOT NULL
+            AND w.station IS NOT NULL
+        ORDER BY w.sort_number
+    `, [routeid, SCHOOL_TZ]);
     return rows;
 }
 
@@ -262,5 +306,7 @@ module.exports = {
     getRouteOwnership,
     upsertDriverLocation,
     getDriverLocation,
+    getRouteGeometry,
+    getStopsForEta,
     canAccessRoute
 }
