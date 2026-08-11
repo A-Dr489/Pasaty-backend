@@ -62,3 +62,15 @@ exports.getStudentAttendance = async (req, res, next) => {
         next(err);
     }
 }
+
+exports.deleteAccount = async (req, res, next) => {
+    try{
+        const userid = req.user.userid;
+        await db.deleteUser(userid);
+
+        res.json({message: "Done!"});
+    } catch(err) {
+        console.log("Server Error (deleteAccount): " + err);
+        next(err);
+    }
+}

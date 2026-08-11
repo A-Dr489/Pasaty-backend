@@ -41,9 +41,14 @@ async function getAttendanceByStudentId(studentid) {
     return rows;
 }
 
+async function deleteUser(id) {
+    await pool.query("DELETE FROM users WHERE id = $1", [id]);
+}
+
 module.exports = {
     getUserById,
     getStudentById,
     getRoutesByDriverId,
-    getAttendanceByStudentId
+    getAttendanceByStudentId,
+    deleteUser
 }

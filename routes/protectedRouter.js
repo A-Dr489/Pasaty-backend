@@ -10,4 +10,6 @@ protectedRouter.get("/myroutes", authenticateUser, requiredRole(ROLE.DRIVER), pr
 protectedRouter.get("/students", authenticateUser, requiredRole(ROLE.PARENT), protectedController.getStudents);
 protectedRouter.get("/attendance/:studentid", authenticateUser, requiredRole(ROLE.PARENT), protectedController.getStudentAttendance);
 
+protectedRouter.delete("/", authenticateUser, protectedController.deleteAccount);
+
 module.exports = protectedRouter;
