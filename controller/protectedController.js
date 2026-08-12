@@ -50,8 +50,9 @@ exports.getStudentAttendance = async (req, res, next) => {
     try{
         const studentid = Number(req.params.studentid);
         if (!Number.isInteger(studentid)) throw httpError(400, 'Invalid studentid');
+        const userid = req.user.userid;
 
-        const rows = await db.getAttendanceByStudentId(studentid);
+        const rows = await db.getAttendanceByStudentId(studentid, userid);
         if(rows.length === 0) {
             throw httpError(404, "No attendance found");
         }

@@ -30,13 +30,15 @@ async function getRoutesByDriverId(driverid) {
     return rows;
 }
 
-async function getAttendanceByStudentId(studentid) {
+async function getAttendanceByStudentId(studentid, userid) {
     const { rows } = await pool.query(`
-        SELECT id, morning_status, afternoon_status, attendance_date, studentid
-        FROM attendance
+        SELECT a.id, a.morning_status, a.afternoon_status, a.attendance_date, a.studentid
+        FROM attendance a
+        JOIN students s ON s.id = a.studentid
         WHERE studentid = $1
+        AND s.parentid = $3
         AND attendance_date = (now() AT TIME ZONE $2)::date
-    `, [studentid, SCHOOL_TZ]);
+    `, [studentid, SCHOOL_TZ, userid]);
 
     return rows;
 }
