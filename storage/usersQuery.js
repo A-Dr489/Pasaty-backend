@@ -132,10 +132,12 @@ async function updateStudent(studentid, first_name, schoolid) {
 async function searchStudent(query) {
     const cleanQuery = `%${query}%`;
     const { rows } = await pool.query(`
-        SELECT s.id, s.first_name, s.routeid, s.parentid,
-        u.first_name AS parent_first, u.last_name AS parent_last, CONCAT(u.first_name, ' ', u.last_name) AS parent_name, u.phone
+        SELECT s.id, s.first_name, s.routeid, s.parentid, s.schoolid,
+        u.first_name AS parent_first, u.last_name AS parent_last, CONCAT(u.first_name, ' ', u.last_name) AS parent_name, u.phone,
+        sk.name AS school_name
         FROM students s
         LEFT JOIN users u ON u.id = s.parentid
+        LEFT JOIN school sk ON s.schoolid = sk.id
         WHERE s.first_name ILIKE $1
          OR u.first_name ILIKE $1
          OR u.last_name ILIKE $1
