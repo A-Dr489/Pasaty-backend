@@ -1,3 +1,4 @@
+const jwt = require("jsonwebtoken");
 const db = require("../storage/usersQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
 const { isPhoneNumber } = require("../utils/functions.js");
@@ -5,6 +6,71 @@ const { httpError, socketOk, socketError } = require("../utils/functions.js");
 const { ROLE, ROUTE_STATUS, SOCKET_EVENT, PHASE } = require("../utils/enum.js");
 const { snapToLine } = require("../utils/geo.js");
 const { buildEstimate } = require("../utils/eta.js");
+
+/*
+    The stored sessions for one user.
+
+    The refresh token itself is deliberately not in the response. It is a live
+    15 day credential, and it is kept in an httpOnly cookie precisely so that
+    no browser script can read it — putting it in an admin page would hand a
+    working key to anything with sight of that screen, tab or network log.
+
+    What is sent instead is enough to tell the rows apart and decide which to
+    end: when it was issued, when it lapses, whether it has already lapsed, and
+    whether it is the session in use. That last one comes from the version
+    inside the token: every login increments users.version and stamps it into
+    the token it issues, so the row whose version still matches the user's is
+    the live one and the rest are leftovers from earlier logins.
+
+    decode rather than verify, because an expired row should still be listed
+    and verifying would throw on exactly those.
+*/
+exports.getUserTokens = async (req, res, next) => {
+    try{
+        const userid = Number(req.params.id);
+        if(!Number.isInteger(userid)) throw httpError(400, "Invalid userid");
+
+        const rows = await db.getRefreshTokensByUser(userid);
+        const now = Date.now();
+
+        const tokens = rows.map((row) => {
+            const payload = jwt.decode(row.token) || {};
+            return {
+                id: row.id,
+                userid: row.userid,
+                createdat: row.createdat,
+                expireat: row.expireat,
+                expired: new Date(row.expireat).getTime() < now,
+                current: payload.version === row.user_version,
+                role: payload.role ?? null
+            };
+        });
+
+        res.json({tokens: tokens});
+    } catch(err) {
+        console.log("Server Error (getUserTokens): " + err);
+        next(err);
+    }
+}
+
+//Ends a stored session. See revokeRefreshToken for why this also bumps the
+//user's token version, and what that means for their other sessions.
+exports.revokeUserToken = async (req, res, next) => {
+    try{
+        const userid = Number(req.params.id);
+        const tokenid = Number(req.params.tokenid);
+        if(!Number.isInteger(userid)) throw httpError(400, "Invalid userid");
+        if(!Number.isInteger(tokenid)) throw httpError(400, "Invalid token id");
+
+        const revoked = await db.revokeRefreshToken(tokenid, userid);
+        if(!revoked) throw httpError(404, "No session found for this user");
+
+        res.json({message: "Done!"});
+    } catch(err) {
+        console.log("Server Error (revokeUserToken): " + err);
+        next(err);
+    }
+}
 
 exports.getAllUsers = async (req, res) => {
     try{

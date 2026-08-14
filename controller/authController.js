@@ -115,9 +115,25 @@ exports.postLogin = [validatorLogin, async (req, res) => {
             maxAge: 15 * 24 * 60 * 60 * 1000
         });
 
+        /*
+            Same shape as GET /v1/protected/profile, so the client holds one
+            user object whether it has just signed in or just refreshed. It
+            previously returned Fname/Lname and no role, which meant anything
+            reading the user had to know which of the two calls produced it.
+
+            Listed field by field rather than spread: getUserByPhone does a
+            SELECT *, so the row still carries the password hash.
+        */
         res.json({
             accessToken: accessToken,
-            user: {id: rows[0].id, Fname: rows[0].first_name, Lname: rows[0].last_name, phone: rows[0].phone}
+            user: {
+                id: rows[0].id,
+                first_name: rows[0].first_name,
+                last_name: rows[0].last_name,
+                phone: rows[0].phone,
+                role: rows[0].role,
+                createdat: rows[0].createdat
+            }
         })
     } catch(e) {
         console.log("Server Error (login): " + e);

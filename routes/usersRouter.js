@@ -16,5 +16,7 @@ usersRouter.post("/students/search", authenticateUser, requiredRole(ROLE.ADMIN),
 usersRouter.get("/parent/:name", authenticateUser, requiredRole(ROLE.ADMIN), usersController.searchParent);
 usersRouter.put("/student/parent/:studentid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.updateStudentParent)
 usersRouter.get("/location/:routeid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getBusLocation);
+usersRouter.get("/tokens/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getUserTokens);
+usersRouter.delete("/tokens/:id/:tokenid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.revokeUserToken);
 
 module.exports = usersRouter;

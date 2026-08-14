@@ -12,9 +12,10 @@ async function getAllUsers(id) {
 
 async function getStudentFromParentId(parentid) {
     const { rows } = await pool.query(`
-        SELECT s.*, sk.name AS school_name
+        SELECT s.*, sk.name AS school_name, r.name AS route_name
         FROM students s
         LEFT JOIN school sk ON s.schoolid = sk.id
+        LEFT JOIN routes r ON s.routeid = r.id
         WHERE parentid = $1
     `, [parentid]);
     return rows;
@@ -115,11 +116,13 @@ async function searchByString(query) {
 async function getAllStudents() {
     const { rows } = await pool.query(`
         SELECT s.id, s.first_name, s.parentid, s.routeid, s.schoolid, sk.name AS school_name,
+        r.name AS route_name,
         CONCAT(u.first_name, ' ', u.last_name) AS parent_name,
         u.phone
         FROM students s
         JOIN users u ON s.parentid = u.id
         LEFT JOIN school sk ON s.schoolid = sk.id
+        LEFT JOIN routes r ON s.routeid = r.id
     `);
 
     return rows;
@@ -134,10 +137,12 @@ async function searchStudent(query) {
     const { rows } = await pool.query(`
         SELECT s.id, s.first_name, s.routeid, s.parentid, s.schoolid,
         u.first_name AS parent_first, u.last_name AS parent_last, CONCAT(u.first_name, ' ', u.last_name) AS parent_name, u.phone,
-        sk.name AS school_name
+        sk.name AS school_name,
+        r.name AS route_name
         FROM students s
         LEFT JOIN users u ON u.id = s.parentid
         LEFT JOIN school sk ON s.schoolid = sk.id
+        LEFT JOIN routes r ON s.routeid = r.id
         WHERE s.first_name ILIKE $1
          OR u.first_name ILIKE $1
          OR u.last_name ILIKE $1
@@ -292,8 +297,75 @@ async function canAccessRoute(userid, role, routeid) {
     return false;
 }
 
+//Every stored session for one user, newest first.
+//
+//The token column comes back so the controller can read the version baked into
+//it and work out which row is the live session. It is stripped there and never
+//reaches the browser.
+async function getRefreshTokensByUser(userid) {
+    const { rows } = await pool.query(`
+        SELECT t.id, t.userid, t.token, t.createdat, t.expireat,
+        u.version AS user_version
+        FROM refreshtokens t
+        JOIN users u ON u.id = t.userid
+        WHERE t.userid = $1
+        ORDER BY t.createdat DESC
+    `, [userid]);
+    return rows;
+}
+
+/*
+    Deletes one stored session and signs the user out everywhere.
+
+    Both halves are needed and they do different jobs. Removing the row stops
+    the refresh endpoint minting new access tokens (postRefresh looks the row
+    up and 403s when it is gone). Bumping users.version is what invalidates the
+    access token the user is already holding, since authenticateUser compares
+    that version on every request and never consults this table. Without the
+    bump they stay signed in until their 15 minute token expires.
+
+    The version is per user, so this ends all of that user's sessions, not only
+    the row that was deleted. The remaining rows stay listed but stop counting
+    as current, which is what the admin sees.
+
+    userid is in the WHERE alongside the id: an admin editing one user must not
+    be able to delete another user's session by passing a foreign token id.
+
+    Returns false when nothing matched, so the caller can 404 rather than
+    reporting a success that revoked nothing — and the version is left alone in
+    that case.
+*/
+async function revokeRefreshToken(tokenid, userid) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const { rowCount } = await client.query(
+            "DELETE FROM refreshtokens WHERE id = $1 AND userid = $2",
+            [tokenid, userid]
+        );
+
+        if(rowCount === 0) {
+            await client.query("ROLLBACK");
+            return false;
+        }
+
+        await client.query("UPDATE users SET version = version + 1 WHERE id = $1", [userid]);
+
+        await client.query("COMMIT");
+        return true;
+    } catch(e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
+}
+
 module.exports = {
     getAllUsers,
+    getRefreshTokensByUser,
+    revokeRefreshToken,
     getStudentFromParentId,
     updateUser,
     deleteStudentById,
