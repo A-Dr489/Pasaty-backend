@@ -1,13 +1,95 @@
 const pool = require("./pool.js");
-const { httpError } = require("../utils/functions.js");
+const { httpError, isPhoneNumber } = require("../utils/functions.js");
 const { ROLE } = require("../utils/enum.js");
+const { whereClause } = require("../utils/pagination.js");
 
 const SCHOOL_TZ = process.env.SCHOOL_TZ;
 
-//Returns all the users except yourself (Admin)
-async function getAllUsers(id) {
-    const { rows } = await pool.query("SELECT * FROM users WHERE id <> $1", [id]);
+/* ---------------------------------------------------------------------------
+   USERS LIST
+
+   One filter set, built once and used by both the page and its count, so the
+   number in the header can never describe a different query from the rows
+   underneath it.
+
+   The conditions are assembled with positional parameters rather than
+   interpolated text: the search term reaches postgres as a value, never as
+   SQL, whatever an admin types into the box.
+--------------------------------------------------------------------------- */
+function userFilters(excludeId, search, role) {
+    //An admin has no business deleting or editing themselves from the roster.
+    const values = [excludeId];
+    const where = ["u.id <> $1"];
+
+    if(role) {
+        values.push(role);
+        where.push(`u.role = $${values.length}`);
+    }
+
+    if(search) {
+        /*
+            One box, two searches. A string of digits is meant as a phone
+            number and would match nothing against a name, so it is compared
+            to the phone column instead - with the separators stripped, since
+            what is typed is rarely punctuated the way it was stored.
+        */
+        if(isPhoneNumber(search)) {
+            values.push(`%${search.replace(/[\s\-()]/g, '')}%`);
+            where.push(`u.phone ILIKE $${values.length}`);
+        } else {
+            values.push(`%${search}%`);
+            const i = values.length;
+            where.push(`(
+                u.first_name ILIKE $${i}
+                OR u.last_name ILIKE $${i}
+                OR CONCAT(u.first_name, ' ', u.last_name) ILIKE $${i}
+            )`);
+        }
+    }
+
+    return { where, values };
+}
+
+/*
+    One page of users, newest first.
+
+    The columns are listed rather than selected with *: users holds the
+    password hash and the token version, and neither has any reason to travel
+    to a browser.
+*/
+async function getUsersPage({ excludeId, search, role, cursor, limit }) {
+    const { where, values } = userFilters(excludeId, search, role);
+
+    if(cursor !== null) {
+        values.push(cursor);
+        where.push(`u.id < $${values.length}`);
+    }
+
+    //limit + 1: the extra row is what proves there is another page.
+    values.push(limit + 1);
+
+    const { rows } = await pool.query(`
+        SELECT u.id, u.first_name, u.last_name, u.phone, u.role, u.createdat
+        FROM users u
+        ${whereClause(where)}
+        ORDER BY u.id DESC
+        LIMIT $${values.length}
+    `, values);
+
     return rows;
+}
+
+//How many rows the current filters match in total, which is the only number a
+//paged list cannot work out for itself.
+async function countUsers({ excludeId, search, role }) {
+    const { where, values } = userFilters(excludeId, search, role);
+    const { rows } = await pool.query(`
+        SELECT COUNT(*)::int AS total
+        FROM users u
+        ${whereClause(where)}
+    `, values);
+
+    return rows[0].total;
 }
 
 async function getStudentFromParentId(parentid) {
@@ -89,68 +171,96 @@ async function deleteUserById(userid) {
     await pool.query("DELETE FROM users WHERE id = $1", [userid]);
 }
 
-async function searchByPhone(phone) {
-    const cleanQuery = `%${phone}%`;
-    const { rows } = await pool.query(`
-        SELECT id, first_name, last_name, phone, role 
-        FROM users 
-        WHERE phone ILIKE $1
-    `, [cleanQuery]);
-    
-    return rows;
+/* ---------------------------------------------------------------------------
+   STUDENTS LIST
+
+   Every join here is a LEFT JOIN, including the one to users. students.parentid
+   is nullable, and a student with no parent attached is exactly the row an
+   admin needs to find in order to attach one - an inner join would hide it from
+   the only screen that can fix it.
+
+   The school and route filters compare ids, not names. Two schools may share a
+   name, names get corrected, and the dropdown already knows the id.
+--------------------------------------------------------------------------- */
+const STUDENT_FROM = `
+    FROM students s
+    LEFT JOIN users u ON u.id = s.parentid
+    LEFT JOIN school sk ON sk.id = s.schoolid
+    LEFT JOIN routes r ON r.id = s.routeid
+`;
+
+function studentFilters(search, schoolid, routeid) {
+    const values = [];
+    const where = [];
+
+    if(search) {
+        //The box searches the child and the parent together: an admin looking
+        //for a family knows one of the two names, not which one we store where.
+        values.push(`%${search}%`);
+        const i = values.length;
+        where.push(`(
+            s.first_name ILIKE $${i}
+            OR u.first_name ILIKE $${i}
+            OR u.last_name ILIKE $${i}
+            OR CONCAT(u.first_name, ' ', u.last_name) ILIKE $${i}
+        )`);
+    }
+
+    if(schoolid === 'none') {
+        where.push("s.schoolid IS NULL");
+    } else if(schoolid !== null) {
+        values.push(schoolid);
+        where.push(`s.schoolid = $${values.length}`);
+    }
+
+    if(routeid === 'none') {
+        where.push("s.routeid IS NULL");
+    } else if(routeid !== null) {
+        values.push(routeid);
+        where.push(`s.routeid = $${values.length}`);
+    }
+
+    return { where, values };
 }
 
-async function searchByString(query) {
-    const cleanQuery = `%${query}%`;
-    const { rows } = await pool.query(`
-        SELECT id, first_name, last_name, phone, role
-        FROM users
-        WHERE first_name ILIKE $1
-        OR last_name ILIKE $1
-        OR CONCAT(first_name, ' ', last_name) ILIKE $1
-    `, [cleanQuery]);
+async function getStudentsPage({ search, schoolid, routeid, cursor, limit }) {
+    const { where, values } = studentFilters(search, schoolid, routeid);
 
-    return rows;
-}
+    if(cursor !== null) {
+        values.push(cursor);
+        where.push(`s.id < $${values.length}`);
+    }
 
-async function getAllStudents() {
+    values.push(limit + 1);
+
     const { rows } = await pool.query(`
-        SELECT s.id, s.first_name, s.parentid, s.routeid, s.schoolid, sk.name AS school_name,
+        SELECT s.id, s.first_name, s.parentid, s.routeid, s.schoolid,
+        sk.name AS school_name,
         r.name AS route_name,
         CONCAT(u.first_name, ' ', u.last_name) AS parent_name,
         u.phone
-        FROM students s
-        JOIN users u ON s.parentid = u.id
-        LEFT JOIN school sk ON s.schoolid = sk.id
-        LEFT JOIN routes r ON s.routeid = r.id
-    `);
+        ${STUDENT_FROM}
+        ${whereClause(where)}
+        ORDER BY s.id DESC
+        LIMIT $${values.length}
+    `, values);
 
     return rows;
+}
+
+async function countStudents({ search, schoolid, routeid }) {
+    const { where, values } = studentFilters(search, schoolid, routeid);
+    const { rows } = await pool.query(`
+        SELECT COUNT(*)::int AS total
+        ${STUDENT_FROM}
+        ${whereClause(where)}
+    `, values);
+
+    return rows[0].total;
 }
 
 async function updateStudent(studentid, first_name, schoolid) {
     await pool.query("UPDATE students SET first_name = $2, schoolid = $3 WHERE id = $1", [studentid, first_name, schoolid]);
-}
-
-async function searchStudent(query) {
-    const cleanQuery = `%${query}%`;
-    const { rows } = await pool.query(`
-        SELECT s.id, s.first_name, s.routeid, s.parentid, s.schoolid,
-        u.first_name AS parent_first, u.last_name AS parent_last, CONCAT(u.first_name, ' ', u.last_name) AS parent_name, u.phone,
-        sk.name AS school_name,
-        r.name AS route_name
-        FROM students s
-        LEFT JOIN users u ON u.id = s.parentid
-        LEFT JOIN school sk ON s.schoolid = sk.id
-        LEFT JOIN routes r ON s.routeid = r.id
-        WHERE s.first_name ILIKE $1
-         OR u.first_name ILIKE $1
-         OR u.last_name ILIKE $1
-         OR CONCAT(u.first_name, ' ', u.last_name) ILIKE $1
-        ORDER BY s.id
-    `, [cleanQuery]);
-
-    return rows;
 }
 
 async function searchParentName(name) {
@@ -363,18 +473,17 @@ async function revokeRefreshToken(tokenid, userid) {
 }
 
 module.exports = {
-    getAllUsers,
+    getUsersPage,
+    countUsers,
     getRefreshTokensByUser,
     revokeRefreshToken,
     getStudentFromParentId,
     updateUser,
     deleteStudentById,
     deleteUserById,
-    searchByPhone,
-    searchByString,
-    getAllStudents,
+    getStudentsPage,
+    countStudents,
     updateStudent,
-    searchStudent,
     searchParentName,
     updateStudentParent,
     getRouteOwnership,

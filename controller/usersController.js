@@ -1,8 +1,8 @@
 const jwt = require("jsonwebtoken");
 const db = require("../storage/usersQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
-const { isPhoneNumber } = require("../utils/functions.js");
 const { httpError, socketOk, socketError } = require("../utils/functions.js");
+const { readPage, buildPage, readIdFilter } = require("../utils/pagination.js");
 const { ROLE, ROUTE_STATUS, SOCKET_EVENT, PHASE } = require("../utils/enum.js");
 const { snapToLine } = require("../utils/geo.js");
 const { buildEstimate } = require("../utils/eta.js");
@@ -72,17 +72,47 @@ exports.revokeUserToken = async (req, res, next) => {
     }
 }
 
-exports.getAllUsers = async (req, res) => {
-    try{
-        const rows = await db.getAllUsers(req.user.userid);
-        if(rows.length === 0) {
-            return res.status(404).json({message: "No users found"});
-        }
+/*
+    One page of users, filtered and searched.
 
-        res.json({users: rows});
-    } catch(e) {
-        console.log("Server Error (getAllUsers): " + e);
-        res.status(500).json({message: "Internal Server Error"});
+    This replaces the old pair of endpoints - GET / listed everyone and
+    POST /search searched them - which had to be merged rather than paged
+    separately: a search and a filter have to compose ("drivers called Sami",
+    then page 2 of that), and two endpoints cannot compose with each other.
+    Everything now arrives as a query string: ?search=&role=&cursor=&limit=.
+
+    An empty result is a 200 with an empty array, not a 404. Under infinite
+    scroll "no rows" is an ordinary answer - the end of a list, or a filter that
+    matches nothing - and a 404 would make reaching the bottom of the page look
+    like a failure.
+
+    total is only counted on the first page of a filter set. The client keeps it
+    while it scrolls, so re-counting the same unchanged table on every page
+    would be paying for an answer we already have.
+*/
+exports.getAllUsers = async (req, res, next) => {
+    try{
+        const { limit, cursor } = readPage(req.query);
+        const search = (req.query.search ?? '').trim();
+        const role = (req.query.role ?? '').trim();
+
+        if(role && !Object.values(ROLE).includes(role)) throw httpError(400, "Invalid role");
+
+        const filters = { excludeId: req.user.userid, search: search, role: role };
+
+        const rows = await db.getUsersPage({...filters, cursor: cursor, limit: limit});
+        const page = buildPage(rows, limit);
+        const total = cursor === null ? await db.countUsers(filters) : undefined;
+
+        res.json({
+            users: page.items,
+            hasMore: page.hasMore,
+            nextCursor: page.nextCursor,
+            total: total
+        });
+    } catch(err) {
+        console.log("Server Error (getAllUsers): " + err);
+        next(err);
     }
 }
 
@@ -138,42 +168,27 @@ exports.deleteUser = async (req, res) => {
     }
 }
 
-exports.searchUser = async (req, res) => {
-    try{
-        const { search } = req.body;
-        if (!search || search.trim() === '') {
-            return res.status(400).json({ message: "The search was empty!" });
-        }
-        const query = search.trim();
-        if(isPhoneNumber(query)) {
-            const cleanPhone = query.replace(/[\s\-()]/g, '');
-            const rows = await db.searchByPhone(cleanPhone);
-            if(rows.length === 0) {
-                return res.status(404).json({message: "Nothing found phone"});
-            }
-
-            res.json({users: rows});
-        } else {
-            const rows = await db.searchByString(query);
-            if(rows.length === 0) {
-                return res.status(404).json({message: "Nothing found"});
-            }
-
-            res.json({users: rows});
-        }
-
-    } catch(e) {
-        console.log("Server Error (searchUser): " + e);
-        res.status(500).json({message: "Internal Server Error"});
-    }
-}
-
+//One page of students. See getAllUsers for why the search and the filters
+//share an endpoint and why an empty page is a 200.
 exports.getStudents = async (req, res, next) => {
     try{
-        const rows = await db.getAllStudents();
-        if(rows.length === 0) throw httpError(404, "No students found");
+        const { limit, cursor } = readPage(req.query);
+        const search = (req.query.search ?? '').trim();
+        const schoolid = readIdFilter(req.query.schoolid, "school");
+        const routeid = readIdFilter(req.query.routeid, "route");
 
-        res.json({students: rows});
+        const filters = { search: search, schoolid: schoolid, routeid: routeid };
+
+        const rows = await db.getStudentsPage({...filters, cursor: cursor, limit: limit});
+        const page = buildPage(rows, limit);
+        const total = cursor === null ? await db.countStudents(filters) : undefined;
+
+        res.json({
+            students: page.items,
+            hasMore: page.hasMore,
+            nextCursor: page.nextCursor,
+            total: total
+        });
     } catch(err) {
         console.log("Server Error (getStudents): " + err);
         next(err);
@@ -191,21 +206,6 @@ exports.updateStudent = async (req, res, next) => {
         res.json({message: "Done!"});
     } catch(err) {
         console.log("Server Error (updateStudent): " + err);
-        next(err);
-    }
-}
-
-exports.searchStudent = async (req, res, next) => {
-    try{
-        const { search } = req.body;
-        if (!search || search.trim() === '') throw httpError(400, "The search was empty!");
-        const query = search.trim();
-        const rows = await db.searchStudent(query);
-        if(rows.length === 0) throw httpError(404, "Nothing found");
-
-        res.json({students: rows});
-    } catch(err) {
-        console.log("Server Error (searchStudent): " + err);
         next(err);
     }
 }

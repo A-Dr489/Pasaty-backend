@@ -9,7 +9,8 @@ routesRouter.get('/', authenticateUser, requiredRole(ROLE.ADMIN), routesControll
 routesRouter.get("/waypoints/:id", authenticateUser, requiredRole(ROLE.ADMIN), routesController.getRouteWaypoints);
 routesRouter.post("/waypoints/:id", authenticateUser, requiredRole(ROLE.ADMIN), routesController.saveDraft);
 routesRouter.put("/generation", authenticateUser, requiredRole(ROLE.ADMIN), routesController.getRoutes);
-routesRouter.post("/search", authenticateUser, requiredRole(ROLE.ADMIN), routesController.searchRoute);
+//Ahead of "/:routeid", which would otherwise swallow "options" as an id.
+routesRouter.get("/options", authenticateUser, requiredRole(ROLE.ADMIN), routesController.getRouteOptions);
 routesRouter.get("/search/student/:name", authenticateUser, requiredRole(ROLE.ADMIN), routesController.searchStudent);
 routesRouter.delete("/:id", authenticateUser, requiredRole(ROLE.ADMIN), routesController.deleteRoute);
 routesRouter.get("/search/driver/:name", authenticateUser, requiredRole(ROLE.ADMIN), routesController.searchDriver);

@@ -1,6 +1,7 @@
 const db = require("../storage/routesQuery.js");
 const axios = require("axios");
 const { httpError } = require("../utils/functions.js");
+const { readPage, buildPage, readIdFilter } = require("../utils/pagination.js");
 const { snapToLine } = require("../utils/geo.js");
 
 /*
@@ -91,17 +92,41 @@ exports.postRoute = async (req, res) => {
     }
 }
 
-exports.getAllRoutes = async (req, res) => {
+//One page of routes. See usersController.getAllUsers for why the search and
+//the school filter share an endpoint and why an empty page is a 200.
+exports.getAllRoutes = async (req, res, next) => {
     try{
-        const rows = await db.getAllRoutes();
-        if(rows.length === 0) {
-            return res.status(404).json({message: "No routes founded"});
-        }
+        const { limit, cursor } = readPage(req.query);
+        const search = (req.query.search ?? '').trim();
+        const schoolid = readIdFilter(req.query.schoolid, "school");
 
+        const filters = { search: search, schoolid: schoolid };
+
+        const rows = await db.getRoutesPage({...filters, cursor: cursor, limit: limit});
+        const page = buildPage(rows, limit);
+        const total = cursor === null ? await db.countRoutes(filters) : undefined;
+
+        res.json({
+            routes: page.items,
+            hasMore: page.hasMore,
+            nextCursor: page.nextCursor,
+            total: total
+        });
+    } catch(err) {
+        console.log("Server Error (getAllRoutes): " + err);
+        next(err);
+    }
+}
+
+//The whole route list, id and name only, to fill the route dropdown on the
+//students page. Not paged on purpose - see getRouteOptions in the query file.
+exports.getRouteOptions = async (req, res, next) => {
+    try{
+        const rows = await db.getRouteOptions();
         res.json({routes: rows});
-    } catch(e) {
-        console.log("Server Error (getAllRoutes): " + e);
-        res.status(500).json({message: "Internal Server Error"});
+    } catch(err) {
+        console.log("Server Error (getRouteOptions): " + err);
+        next(err);
     }
 }
 
@@ -179,26 +204,6 @@ exports.getRoutes = async (req, res) => {
         res.json({routes: rows[0]});
     } catch(e) {
         console.log("Server Error (getRoutes): " + e);
-        res.status(500).json({message: "Internal Server Error"});
-    }
-}
-
-exports.searchRoute = async (req, res) => {
-    try{
-        const { search } = req.body;
-        if (!search || search.trim() === '') {
-            return res.status(400).json({ message: "The search was empty!" });
-        }
-        const name = search.trim();
-        const rows = await db.searchRouteName(name);
-
-        if(rows.length === 0) {
-            return res.status(404).json({message: "No routes found"});
-        }
-
-        res.json({routes: rows});
-    } catch(e) {
-        console.log("Server Error (searchRoute): " + e);
         res.status(500).json({message: "Internal Server Error"});
     }
 }

@@ -1,19 +1,93 @@
 const pool = require("./pool.js");
 const format = require("pg-format");
 const { httpError } = require("../utils/functions.js");
+const { whereClause } = require("../utils/pagination.js");
 
 async function addRouteName(name, schoolid) {
     const { rows } = await pool.query("INSERT INTO routes (name, schoolid) VALUES ($1, $2) RETURNING id", [name, schoolid]);
     return rows;
 }
 
-async function getAllRoutes() {
+/* ---------------------------------------------------------------------------
+   ROUTES LIST
+
+   Same shape as the users and students lists: one filter set feeding both the
+   page and its count, keyset paged on id DESC.
+--------------------------------------------------------------------------- */
+const ROUTE_FROM = `
+    FROM routes r
+    LEFT JOIN school sk ON sk.id = r.schoolid
+`;
+
+function routeFilters(search, schoolid) {
+    const values = [];
+    const where = [];
+
+    if(search) {
+        values.push(`%${search}%`);
+        where.push(`r.name ILIKE $${values.length}`);
+    }
+
+    if(schoolid === 'none') {
+        where.push("r.schoolid IS NULL");
+    } else if(schoolid !== null) {
+        values.push(schoolid);
+        where.push(`r.schoolid = $${values.length}`);
+    }
+
+    return { where, values };
+}
+
+async function getRoutesPage({ search, schoolid, cursor, limit }) {
+    const { where, values } = routeFilters(search, schoolid);
+
+    if(cursor !== null) {
+        values.push(cursor);
+        where.push(`r.id < $${values.length}`);
+    }
+
+    values.push(limit + 1);
+
     const { rows } = await pool.query(`
         SELECT r.id, r.name, r.updatedat, r.schoolid,
-        s.name AS school_name 
-        FROM routes r 
-        LEFT JOIN school s ON s.id = r.schoolid
-        ORDER BY r.id DESC    
+        sk.name AS school_name
+        ${ROUTE_FROM}
+        ${whereClause(where)}
+        ORDER BY r.id DESC
+        LIMIT $${values.length}
+    `, values);
+
+    return rows;
+}
+
+async function countRoutes({ search, schoolid }) {
+    const { where, values } = routeFilters(search, schoolid);
+    const { rows } = await pool.query(`
+        SELECT COUNT(*)::int AS total
+        ${ROUTE_FROM}
+        ${whereClause(where)}
+    `, values);
+
+    return rows[0].total;
+}
+
+/*
+    Every route, id and name only, for the route dropdown on the students page.
+
+    This one is deliberately not paged. A filter's options have to describe the
+    whole table or the filter lies - offering only the routes that happen to be
+    on the page you have scrolled to would hide the very rows you are trying to
+    find. It stays cheap because it is two columns and no joins, and a fleet has
+    routes in the hundreds, not the millions.
+
+    schoolid rides along so the page can narrow the list to the school already
+    chosen without asking again.
+*/
+async function getRouteOptions() {
+    const { rows } = await pool.query(`
+        SELECT id, name, schoolid
+        FROM routes
+        ORDER BY name
     `);
     return rows;
 }
@@ -229,19 +303,6 @@ async function getRouteWithDistance(routeid) {
     return rows;
 }
 
-async function searchRouteName(name) {
-    const cleanName = `%${name}%`;
-    const { rows } = await pool.query(`
-        SELECT r.id, r.name, r.updatedat, r.schoolid,
-        sk.name AS school_name
-        FROM routes r
-        LEFT JOIN school sk ON r.schoolid = sk.id 
-        WHERE r.name ILIKE $1 
-        ORDER BY r.id DESC
-    `, [cleanName]);
-    return rows;
-}
-
 async function searchStudentName(name) {
     const cleanName = `%${name}%`;
     const { rows } = await pool.query(`
@@ -330,13 +391,14 @@ async function updateRouteData(name, schoolid, routeid) {
 
 module.exports = {
     addRouteName,
-    getAllRoutes,
+    getRoutesPage,
+    countRoutes,
+    getRouteOptions,
     getWaypointsByRoute,
     saveDraftChanges,
     getWaypointsInOrder,
     updateRoutes,
     getRouteWithDistance,
-    searchRouteName,
     searchStudentName,
     deleteRouteById,
     searchDriverName,
