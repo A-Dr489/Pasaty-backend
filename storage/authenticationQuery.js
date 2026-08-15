@@ -53,8 +53,22 @@ async function checkForRefreshToken(token, userid) {
     return rows;
 }
 
+/*
+    Ends one stored session.
+
+    RETURNING userid because logout also unregisters the device, and that has to
+    be done as somebody: /v1/auth/logout runs without authenticateUser, so there
+    is no req.user to check ownership against. The owner of the refresh token
+    being deleted is the one credential the caller actually presented, so it is
+    what the device removal is scoped to. No row back means the cookie matched
+    nothing and no identity was proven.
+*/
 async function deleteRefreshToken(token) {
-    await pool.query("DELETE FROM refreshtokens WHERE token = $1", [token]);
+    const { rows } = await pool.query(
+        "DELETE FROM refreshtokens WHERE token = $1 RETURNING userid",
+        [token]
+    );
+    return rows[0]?.userid ?? null;
 }
 
 async function getUserById(id) {

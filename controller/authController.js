@@ -1,5 +1,6 @@
 const bcrypt = require("bcryptjs");
 const db = require("../storage/authenticationQuery.js");
+const deviceDb = require("../storage/deviceQuery.js");
 const { body, validationResult } = require("express-validator");
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/jwtTools.js");
 const { ROLE } = require("../utils/enum.js");
@@ -168,11 +169,32 @@ exports.postRefresh = async (req, res) => {
     }
 }
 
+/*
+    Ends the session and, if the app sent one, unregisters the phone.
+
+    The device token has to go with the logout: leaving the row behind means
+    the next person to sign in on that handset keeps receiving notifications
+    about another family's children until something else overwrites it.
+
+    Ownership is taken from the refresh token, not from the request body. This
+    endpoint runs without authenticateUser - there is no req.user here - so the
+    userid returned by deleting the refresh token row is the only identity the
+    caller has actually proven. Without it, a body containing a device token
+    would let anyone unregister any phone whose token they had seen.
+
+    A logout with no valid cookie therefore still clears the session client-side
+    but leaves the device row alone: there is nobody to attribute it to.
+*/
 exports.postLogout = async (req, res) => {
     try {
         const { refreshToken } = req.cookies;
         if(refreshToken) {
-            await db.deleteRefreshToken(refreshToken);
+            const userid = await db.deleteRefreshToken(refreshToken);
+
+            const deviceToken = req.body?.device_token?.trim();
+            if(userid && deviceToken) {
+                await deviceDb.deleteDeviceToken(userid, deviceToken);
+            }
         }
 
         res.clearCookie("refreshToken");

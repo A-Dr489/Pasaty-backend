@@ -22,11 +22,22 @@ async function withTransaction(fn) {
 async function afternoonTransition(attendanceid, driverid, { from, to, tsColumn }) {
   return withTransaction(async (client) => {
     const { rows } = await client.query(
-      `SELECT a.id, a.routeid, a.afternoon_status,
+      /*
+         students is joined for the push notification: the parent to notify and
+         the name to put in it. LEFT, not inner - attendance.studentid is
+         nullable, and an inner join would return no rows for such a row, which
+         the guard below turns into a 404. A missing push target must not stop a
+         driver marking a child.
+
+         It costs no extra lock: FOR UPDATE OF a locks attendance only.
+      */
+      `SELECT a.id, a.routeid, a.afternoon_status, a.studentid,
               a.${tsColumn} AS current_at,
-              r.driverid, r.afternoon_status AS route_afternoon_status
+              r.driverid, r.afternoon_status AS route_afternoon_status,
+              s.first_name AS student_name, s.parentid
          FROM attendance a
          JOIN routes r ON r.id = a.routeid
+         LEFT JOIN students s ON s.id = a.studentid
         WHERE a.id = $1
         FOR UPDATE OF a`,
       [attendanceid]
@@ -49,6 +60,9 @@ async function afternoonTransition(attendanceid, driverid, { from, to, tsColumn 
         changed: false,
         attendanceid: row.id,
         routeid: row.routeid,
+        studentid: row.studentid,
+        student_name: row.student_name,
+        parentid: row.parentid,
         old_status: to,
         new_status: to,
         at: row.current_at,
@@ -68,6 +82,9 @@ async function afternoonTransition(attendanceid, driverid, { from, to, tsColumn 
       changed: true,
       attendanceid: row.id,
       routeid: row.routeid,
+      studentid: row.studentid,
+      student_name: row.student_name,
+      parentid: row.parentid,
       old_status: oldStatus,
       new_status: to,
       at: upd[0].at,
@@ -178,11 +195,15 @@ async function boardMorning(attendanceid, driverid) {
     return withTransaction(async (client) => {
     // Lock the attendance row; pull its route's owner + morning status.
     const { rows } = await client.query(
-      `SELECT a.id, a.routeid, a.morning_status,
+      //LEFT JOIN students for the push target and the child's name — see
+      //afternoonTransition for why it must not be an inner join.
+      `SELECT a.id, a.routeid, a.morning_status, a.studentid,
               r.driverid, r.morning_status AS route_morning_status,
-              a.morning_boarded_at
+              a.morning_boarded_at,
+              s.first_name AS student_name, s.parentid
          FROM attendance a
          JOIN routes r ON r.id = a.routeid
+         LEFT JOIN students s ON s.id = a.studentid
         WHERE a.id = $1
         FOR UPDATE OF a`,
       [attendanceid]
@@ -205,6 +226,9 @@ async function boardMorning(attendanceid, driverid) {
         changed: false,
         attendanceid: row.id,
         routeid: row.routeid,
+        studentid: row.studentid,
+        student_name: row.student_name,
+        parentid: row.parentid,
         old_status: oldStatus,
         new_status: oldStatus,
         boarded_at: row.morning_boarded_at,
@@ -227,6 +251,9 @@ async function boardMorning(attendanceid, driverid) {
       changed: true,
       attendanceid: row.id,
       routeid: row.routeid,
+      studentid: row.studentid,
+      student_name: row.student_name,
+      parentid: row.parentid,
       old_status: oldStatus, // real prior value, not hardcoded
       new_status: ATTENDANCE_STATUS.BOARDED,
       boarded_at: upd[0].morning_boarded_at,
@@ -238,11 +265,15 @@ async function absentMorning(attendanceid, driverid) {
     return withTransaction(async (client) => {
     // Lock the attendance row; pull its route's owner + morning status.
     const { rows } = await client.query(
-      `SELECT a.id, a.routeid, a.morning_status,
+      //LEFT JOIN students for the push target and the child's name — see
+      //afternoonTransition for why it must not be an inner join.
+      `SELECT a.id, a.routeid, a.morning_status, a.studentid,
               r.driverid, r.morning_status AS route_morning_status,
-              a.morning_boarded_at
+              a.morning_boarded_at,
+              s.first_name AS student_name, s.parentid
          FROM attendance a
          JOIN routes r ON r.id = a.routeid
+         LEFT JOIN students s ON s.id = a.studentid
         WHERE a.id = $1
         FOR UPDATE OF a`,
       [attendanceid]
@@ -265,6 +296,9 @@ async function absentMorning(attendanceid, driverid) {
         changed: false,
         attendanceid: row.id,
         routeid: row.routeid,
+        studentid: row.studentid,
+        student_name: row.student_name,
+        parentid: row.parentid,
         old_status: oldStatus,
         new_status: oldStatus,
       };
@@ -286,6 +320,9 @@ async function absentMorning(attendanceid, driverid) {
       changed: true,
       attendanceid: row.id,
       routeid: row.routeid,
+      studentid: row.studentid,
+      student_name: row.student_name,
+      parentid: row.parentid,
       old_status: oldStatus, // real prior value, not hardcoded
       new_status: ATTENDANCE_STATUS.ABSENT,
     };
@@ -332,18 +369,35 @@ async function completeMorningRoute(routeid, driverid) {
       [routeid, SCHOOL_TZ, ATTENDANCE_STATUS.ARRIVED, ATTENDANCE_STATUS.BOARDED]
     );
 
-    await client.query(
+    /*
+        Never-boarded WAITING -> ABSENT.
+
+        RETURNING because these are the only absences nobody has been told
+        about: a child the driver marked absent had that pushed at the time,
+        while these are decided here, in bulk, at the end of the run. Without
+        knowing which rows this statement changed, the two are
+        indistinguishable afterwards - both are simply ABSENT with no boarding
+        time - and notifying every ABSENT child would push a second, duplicate
+        notification to the parents the driver had already told.
+    */
+    const { rows: autoAbsent } = await client.query(
       `UPDATE attendance
           SET morning_status = $3
         WHERE routeid = $1
           AND attendance_date = ${today}
-          AND morning_status = $4`,
+          AND morning_status = $4
+      RETURNING id`,
       [routeid, SCHOOL_TZ, ATTENDANCE_STATUS.ABSENT, ATTENDANCE_STATUS.WAITING]
     );
+    const autoAbsentIds = new Set(autoAbsent.map((row) => row.id));
 
     const { rows: finalStudents } = await client.query(
+      //parentid is here for the "arrived at school" push: this is the only
+      //place a child's arrival is decided, and it happens in bulk rather than
+      //per student, so the notification is sent from this roster.
       `SELECT a.id AS attendanceid, a.studentid AS id,
               s.first_name, a.morning_status AS status,
+              s.parentid,
               CONCAT(p.first_name, ' ', p.last_name) AS parent_name
          FROM attendance a
          JOIN students s ON s.id = a.studentid
@@ -354,10 +408,17 @@ async function completeMorningRoute(routeid, driverid) {
       [routeid, SCHOOL_TZ]
     );
 
+    //auto_absent marks the children this call marked absent, as opposed to the
+    //ones the driver marked during the run. Only the former still need telling.
+    const students = finalStudents.map((student) => ({
+      ...student,
+      auto_absent: autoAbsentIds.has(student.attendanceid),
+    }));
+
     const summary = {
-      total_students: finalStudents.length,
-      arrived: finalStudents.filter((s) => s.status === ATTENDANCE_STATUS.ARRIVED).length,
-      absent: finalStudents.filter((s) => s.status === ATTENDANCE_STATUS.ABSENT).length,
+      total_students: students.length,
+      arrived: students.filter((s) => s.status === ATTENDANCE_STATUS.ARRIVED).length,
+      absent: students.filter((s) => s.status === ATTENDANCE_STATUS.ABSENT).length,
       trip_duration: updRows[0].trip_duration
     };
 
@@ -366,7 +427,7 @@ async function completeMorningRoute(routeid, driverid) {
       started_at: updRows[0].morning_started_at,
       completed_at: updRows[0].morning_completed_at,
       summary,
-      students: finalStudents,
+      students,
     };
   });
 }
@@ -477,11 +538,15 @@ async function absentAfternoon(attendanceid, driverid) {
     return withTransaction(async (client) => {
     // Lock the attendance row; pull its route's owner + morning status.
     const { rows } = await client.query(
-      `SELECT a.id, a.routeid, a.afternoon_status,
+      //LEFT JOIN students for the push target and the child's name — see
+      //afternoonTransition for why it must not be an inner join.
+      `SELECT a.id, a.routeid, a.afternoon_status, a.studentid,
               r.driverid, r.afternoon_status AS route_afternoon_status,
-              a.afternoon_boarded_at
+              a.afternoon_boarded_at,
+              s.first_name AS student_name, s.parentid
          FROM attendance a
          JOIN routes r ON r.id = a.routeid
+         LEFT JOIN students s ON s.id = a.studentid
         WHERE a.id = $1
         FOR UPDATE OF a`,
       [attendanceid]
@@ -504,6 +569,9 @@ async function absentAfternoon(attendanceid, driverid) {
         changed: false,
         attendanceid: row.id,
         routeid: row.routeid,
+        studentid: row.studentid,
+        student_name: row.student_name,
+        parentid: row.parentid,
         old_status: oldStatus,
         new_status: oldStatus,
       };
@@ -522,6 +590,9 @@ async function absentAfternoon(attendanceid, driverid) {
       changed: true,
       attendanceid: row.id,
       routeid: row.routeid,
+      studentid: row.studentid,
+      student_name: row.student_name,
+      parentid: row.parentid,
       old_status: oldStatus, // real prior value, not hardcoded
       new_status: ATTENDANCE_STATUS.ABSENT,
     };
@@ -566,16 +637,25 @@ async function completeAfternoonRoute(routeid, driverid) {
 
     const today = `(now() AT TIME ZONE $2)::date`;
 
-    // Still BOARDED -> DROPPED_OFF (keep an earlier dropoff time if one exists)
-    await client.query(
+    /*
+        Still BOARDED -> DROPPED_OFF (keep an earlier dropoff time if one exists)
+
+        RETURNING for the same reason as the morning's auto-absent: a child the
+        driver dropped off had that pushed at the time, and a child dropped off
+        by this statement has been told nothing. Afterwards both simply read
+        DROPPED_OFF, so this is the only chance to tell them apart.
+    */
+    const { rows: autoDropped } = await client.query(
       `UPDATE attendance
           SET afternoon_status = $3,
               afternoon_dropped_off_at = COALESCE(afternoon_dropped_off_at, now())
         WHERE routeid = $1
           AND attendance_date = ${today}
-          AND afternoon_status = $4`,
+          AND afternoon_status = $4
+      RETURNING id`,
       [routeid, SCHOOL_TZ, ATTENDANCE_STATUS.DROPPED_OFF, ATTENDANCE_STATUS.BOARDED]
     );
+    const autoDroppedIds = new Set(autoDropped.map((row) => row.id));
 
     // Never-boarded WAITING -> ABSENT (no ride home)
     await client.query(
@@ -588,8 +668,10 @@ async function completeAfternoonRoute(routeid, driverid) {
     );
 
     const { rows: finalStudents } = await client.query(
+      //parentid is here so the completion notifications can be aimed: who gets
+      //a dropoff, and who gets the run-complete instead.
       `SELECT a.id AS attendanceid, a.studentid AS id,
-              s.first_name,
+              s.first_name, s.parentid,
               CONCAT(p.first_name, ' ', p.last_name) AS parent_name,
               a.morning_status, a.afternoon_status
          FROM attendance a
@@ -601,10 +683,17 @@ async function completeAfternoonRoute(routeid, driverid) {
       [routeid, SCHOOL_TZ]
     );
 
+    //auto_dropped_off marks the children this call dropped off, as opposed to
+    //the ones the driver dropped off during the run.
+    const students = finalStudents.map((student) => ({
+      ...student,
+      auto_dropped_off: autoDroppedIds.has(student.attendanceid),
+    }));
+
     const summary = {
-      total_students: finalStudents.length,
-      dropped_off: finalStudents.filter((s) => s.afternoon_status === ATTENDANCE_STATUS.DROPPED_OFF).length,
-      absent: finalStudents.filter((s) => s.afternoon_status === ATTENDANCE_STATUS.ABSENT).length,
+      total_students: students.length,
+      dropped_off: students.filter((s) => s.afternoon_status === ATTENDANCE_STATUS.DROPPED_OFF).length,
+      absent: students.filter((s) => s.afternoon_status === ATTENDANCE_STATUS.ABSENT).length,
       trip_duration: updRows[0].trip_duration
     };
 
@@ -613,7 +702,7 @@ async function completeAfternoonRoute(routeid, driverid) {
       started_at: updRows[0].afternoon_started_at,
       completed_at: updRows[0].afternoon_completed_at,
       summary,
-      students: finalStudents,
+      students,
     };
   });
 }

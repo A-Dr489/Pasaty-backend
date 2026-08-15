@@ -11,6 +11,7 @@ const usersRouter = require("./routes/usersRouter.js");
 const routesRouter = require("./routes/routesRouter.js");
 const attendanceRouter = require("./routes/AttendanceRouter.js");
 const dataRouter = require("./routes/dataRouter.js");
+const deviceRouter = require("./routes/deviceRouter.js");
 const { socketHandler } = require("./sockets/socketHandler.js");
 const { httpError } = require("./utils/functions.js");
 const pool = require("./storage/pool.js");
@@ -35,6 +36,7 @@ app.use("/v1/users", usersRouter);
 app.use("/v1/data", dataRouter);
 app.use("/v1/routes", routesRouter);
 app.use("/v1/attendance", attendanceRouter);
+app.use("/v1/devices", deviceRouter);
 app.get("/test", async (req, res) => {
     try {
         const { rows } = await pool.query("SELECT 1 FROM users");
