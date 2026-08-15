@@ -231,7 +231,14 @@ async function getRouteWithDistance(routeid) {
 
 async function searchRouteName(name) {
     const cleanName = `%${name}%`;
-    const { rows } = await pool.query("SELECT id, name, updatedat FROM routes WHERE name ILIKE $1 ORDER BY id DESC", [cleanName]);
+    const { rows } = await pool.query(`
+        SELECT r.id, r.name, r.updatedat, r.schoolid,
+        sk.name AS school_name
+        FROM routes r
+        LEFT JOIN school sk ON r.schoolid = sk.id 
+        WHERE r.name ILIKE $1 
+        ORDER BY r.id DESC
+    `, [cleanName]);
     return rows;
 }
 
