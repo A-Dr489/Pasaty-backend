@@ -15,6 +15,12 @@ attendanceRouter.post("/:attendanceid/afternoon/absent", authenticateUser, requi
 attendanceRouter.patch("/:attendanceid/afternoon/dropoff", authenticateUser, requiredRole(ROLE.DRIVER), attendanceController.dropoffAfternoonStudent);
 attendanceRouter.post("/:routeid/afternoon/complete", authenticateUser, requiredRole(ROLE.DRIVER), attendanceController.completeAfternoon);
 
+//Ahead of the "/:attendanceid" patterns, so "student" is never read as an id.
+attendanceRouter.get("/student/:studentid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.studentAttendance);
+attendanceRouter.get("/student/:studentid/export", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.studentAttendanceExport);
+attendanceRouter.get("/school/:schoolid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.schoolAttendance);
+attendanceRouter.get("/school/:schoolid/export", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.schoolAttendanceExport);
+
 attendanceRouter.patch("/:attendanceid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.adminOverride);
 attendanceRouter.post("/:routeid/attendance", authenticateUser, requiredRole(ROLE.ADMIN, ROLE.DRIVER), attendanceController.routeAttendance);
 //MVP

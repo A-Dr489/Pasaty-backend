@@ -2,6 +2,15 @@ const db = require("../storage/AttendanceQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
 const { httpError } = require("../utils/functions.js");
 const { SOCKET_EVENT, ATTENDANCE_STATUS } = require("../utils/enum.js");
+const {
+  readDatePage,
+  readDateIdPage,
+  dateIdCursor,
+  readDateFilter,
+  readIdFilter,
+  buildPage
+} = require("../utils/pagination.js");
+const { toWorkbookBuffer, XLSX_CONTENT_TYPE } = require("../utils/xlsx.js");
 const { notify, notifyRoute } = require("../utils/push.js");
 
 /*
@@ -401,6 +410,228 @@ exports.adminOverride = async (req, res, next) => {
 }
 
 //gets the attendance in the provided date
+/*
+    One student's attendance history, newest day first, paged.
+
+    ?from= ?to=  an inclusive date range, either end optional
+
+    The range is applied here rather than over the loaded rows in the browser
+    for the same reason the students filters are: the list is paged, so a filter
+    on the client would only ever narrow the days that had been scrolled to and
+    would show nothing at all for a month further back than that.
+
+    The student themself is only sent with the first page - the client keeps it
+    while scrolling, so re-selecting the same unchanged row for every page would
+    be paying for an answer we already have. Same reasoning as `total` on the
+    other paged lists.
+
+    A student who exists but has never been on a run is a 200 with an empty
+    list, not a 404: there is nothing wrong, they simply have no history yet.
+    Only an id matching no student at all is missing.
+*/
+function readStudentFilters(req) {
+  const studentid = Number(req.params.studentid);
+  if (!Number.isInteger(studentid)) throw httpError(400, 'Invalid studentid');
+
+  return {
+    studentid: studentid,
+    from: readDateFilter(req.query.from, "from"),
+    to: readDateFilter(req.query.to, "to")
+  };
+}
+
+exports.studentAttendance = async (req, res, next) => {
+  try {
+      const filters = readStudentFilters(req);
+      const { limit, cursor } = readDatePage(req.query);
+
+      const student = cursor === null ? await db.getStudentSummary(filters.studentid) : undefined;
+      if (student === null) throw httpError(404, "Student not found");
+
+      const rows = await db.getStudentAttendancePage({ ...filters, cursor, limit });
+      //Paged by date, so the cursor is the date - not the row id.
+      const page = buildPage(rows, limit, "attendance_date");
+      //Only on the first page: later pages do not change what is in scope, and
+      //the client keeps the number it was given.
+      const total = cursor === null ? await db.countStudentAttendance(filters) : undefined;
+
+      res.json({
+        attendance: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+        student: student,
+        total: total
+      });
+    } catch (err) {
+      console.log("Server Error (studentAttendance): " + err);
+      next(err);
+    }
+}
+
+/*
+    The same history as a spreadsheet.
+
+    The date range is respected, so with no dates set this is the child's
+    complete history and with them it is whatever the page was showing - but it
+    is never only the pages that happen to have been scrolled to.
+
+    Every column the table shows plus the student it belongs to on each row, so
+    a file that ends up merged with another export still says whose it is.
+
+    The types are what make it a spreadsheet rather than a grid of text: the
+    date column sorts and filters as dates, and the four times as times.
+*/
+const EXPORT_COLUMNS = [
+  { key: "student_name", header: "Student" },
+  { key: "parent_name", header: "Parent" },
+  { key: "attendance_date", header: "Date", type: "date" },
+  { key: "route_name", header: "Route" },
+  { key: "morning_status", header: "Morning status" },
+  //Named as times because that is what they are — the day is the Date column.
+  { key: "morning_boarded_at", header: "Morning boarded time", type: "time" },
+  { key: "morning_arrived_at", header: "Morning arrived time", type: "time" },
+  { key: "afternoon_status", header: "Afternoon status" },
+  { key: "afternoon_boarded_at", header: "Afternoon boarded time", type: "time" },
+  { key: "afternoon_dropped_off_at", header: "Afternoon dropped off time", type: "time" }
+];
+
+exports.studentAttendanceExport = async (req, res, next) => {
+  try {
+      const filters = readStudentFilters(req);
+
+      const student = await db.getStudentSummary(filters.studentid);
+      if (!student) throw httpError(404, "Student not found");
+
+      const rows = await db.getStudentAttendanceAll(filters);
+
+      const buffer = await toWorkbookBuffer({
+        sheetName: "Attendance",
+        columns: EXPORT_COLUMNS,
+        rows: rows.map((row) => ({
+          ...row,
+          student_name: student.first_name,
+          parent_name: student.parent_name
+        }))
+      });
+
+      /*
+          A filename is set even though the browser download is driven by the
+          client: anything else fetching this - curl, a scheduled job - gets a
+          sensible name instead of "student".
+
+          The range is in it so two exports of the same child do not overwrite
+          each other in a downloads folder, the same as the school's.
+      */
+      const range = filters.from || filters.to
+        ? `-${filters.from ?? "start"}_${filters.to ?? "end"}`
+        : "";
+
+      res.setHeader("Content-Type", XLSX_CONTENT_TYPE);
+      res.setHeader("Content-Disposition", `attachment; filename="attendance-${filters.studentid}${range}.xlsx"`);
+      res.send(buffer);
+    } catch (err) {
+      console.log("Server Error (studentAttendanceExport): " + err);
+      next(err);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   ONE SCHOOL'S ATTENDANCE
+
+   ?routeid=  narrows to one route, absent means every route
+   ?from= ?to=  an inclusive date range, either end optional
+--------------------------------------------------------------------------- */
+function readSchoolFilters(req) {
+  const schoolid = Number(req.params.schoolid);
+  if (!Number.isInteger(schoolid)) throw httpError(400, 'Invalid schoolid');
+
+  return {
+    schoolid: schoolid,
+    from: readDateFilter(req.query.from, "from"),
+    to: readDateFilter(req.query.to, "to")
+  };
+}
+
+exports.schoolAttendance = async (req, res, next) => {
+  try {
+      const filters = readSchoolFilters(req);
+      const routeid = readIdFilter(req.query.routeid, "route");
+      const { limit, cursor } = readDateIdPage(req.query);
+
+      //'none' is meaningless here: an attendance row always belongs to the run
+      //that created it, so there is no such thing as one without a route.
+      if (routeid === 'none') throw httpError(400, "Invalid route");
+
+      const scoped = { ...filters, routeid: routeid };
+
+      const rows = await db.getSchoolAttendancePage({ ...scoped, cursor, limit });
+      //Many rows share a date, so the position is the date and the id together.
+      const page = buildPage(rows, limit, dateIdCursor);
+      const total = cursor === null ? await db.countSchoolAttendance(scoped) : undefined;
+
+      res.json({
+        attendance: page.items,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+        total: total
+      });
+    } catch (err) {
+      console.log("Server Error (schoolAttendance): " + err);
+      next(err);
+    }
+}
+
+const SCHOOL_EXPORT_COLUMNS = [
+  { key: "attendance_date", header: "Date", type: "date" },
+  { key: "student_name", header: "Student" },
+  { key: "parent_name", header: "Parent" },
+  { key: "route_name", header: "Route" },
+  { key: "morning_status", header: "Morning status" },
+  { key: "morning_boarded_at", header: "Morning boarded time", type: "time" },
+  { key: "morning_arrived_at", header: "Morning arrived time", type: "time" },
+  { key: "afternoon_status", header: "Afternoon status" },
+  { key: "afternoon_boarded_at", header: "Afternoon boarded time", type: "time" },
+  { key: "afternoon_dropped_off_at", header: "Afternoon dropped off time", type: "time" }
+];
+
+/*
+    The school's attendance as a spreadsheet.
+
+    Every route, always — the route filter on the page narrows what is being
+    read, not what is exported. The date range is respected, so with no dates
+    set this is the school's complete history and with them it is a term or a
+    month.
+*/
+exports.schoolAttendanceExport = async (req, res, next) => {
+  try {
+      const filters = readSchoolFilters(req);
+
+      const school = await db.getSchoolName(filters.schoolid);
+      if (!school) throw httpError(404, "School not found");
+
+      const rows = await db.getSchoolAttendanceAll(filters);
+
+      const buffer = await toWorkbookBuffer({
+        sheetName: "Attendance",
+        columns: SCHOOL_EXPORT_COLUMNS,
+        rows: rows
+      });
+
+      //The range is in the filename so two exports of the same school do not
+      //overwrite each other in a downloads folder.
+      const range = filters.from || filters.to
+        ? `-${filters.from ?? "start"}_${filters.to ?? "end"}`
+        : "";
+
+      res.setHeader("Content-Type", XLSX_CONTENT_TYPE);
+      res.setHeader("Content-Disposition", `attachment; filename="attendance-school-${school.id}${range}.xlsx"`);
+      res.send(buffer);
+    } catch (err) {
+      console.log("Server Error (schoolAttendanceExport): " + err);
+      next(err);
+    }
+}
+
 exports.routeAttendance = async (req, res, next) => {
   try {
       const routeid = Number(req.params.routeid);

@@ -1,6 +1,7 @@
 // require("dotenv").config();
 const pool = require("./pool.js");
 const { httpError } = require('../utils/functions.js');
+const { whereClause } = require("../utils/pagination.js");
 const { ROUTE_STATUS, ATTENDANCE_STATUS } = require("../utils/enum.js");
 
 //Helper Function
@@ -811,6 +812,327 @@ async function getAttendance(routeid, date) {
 }
 
 //MVP
+/* ---------------------------------------------------------------------------
+   ONE STUDENT'S HISTORY
+
+   The admin portal's per-student view: every day this child has an attendance
+   row for, newest first, paged by date.
+--------------------------------------------------------------------------- */
+
+/*
+    Who the history belongs to, for the page header and for handing the name to
+    the register's search box.
+
+    LEFT JOINs throughout: parentid, routeid and schoolid are all nullable, and
+    a student missing any of them still has attendance worth looking at.
+
+    No row count here. It used to carry one, but the history can now be narrowed
+    to a date range and a total that ignored the range would contradict the rows
+    under it. countStudentAttendance answers it under the same filters the page
+    was read with, so there is only one place the number comes from.
+*/
+async function getStudentSummary(studentid) {
+    const { rows } = await pool.query(`
+        SELECT s.id, s.first_name, s.routeid,
+               CONCAT(u.first_name, ' ', u.last_name) AS parent_name,
+               r.name AS route_name
+        FROM students s
+        LEFT JOIN users u ON u.id = s.parentid
+        LEFT JOIN routes r ON r.id = s.routeid
+        WHERE s.id = $1
+    `, [studentid]);
+
+    return rows[0] ?? null;
+}
+
+/*
+    The student and an optional date range, shared by the page, the count and
+    the export so the three can never disagree about what is in scope.
+
+    startAt is where this query has already used up parameter positions - the
+    two that format times have taken $1 before these are numbered.
+*/
+function studentAttendanceFilters(studentid, from, to, startAt = 0) {
+    const values = [];
+    const where = [];
+    const at = () => startAt + values.length;
+
+    values.push(studentid);
+    where.push(`a.studentid = $${at()}`);
+
+    //Inclusive at both ends, the same as the school view: an admin asking for
+    //the 1st to the 30th means the 30th to be in it.
+    if(from) {
+        values.push(from);
+        where.push(`a.attendance_date >= $${at()}::date`);
+    }
+
+    if(to) {
+        values.push(to);
+        where.push(`a.attendance_date <= $${at()}::date`);
+    }
+
+    return { where, values };
+}
+
+/*
+    One page of that history.
+
+    attendance_date is formatted in postgres rather than handed over as a date
+    object. node-pg turns a `date` column into a JS Date at local midnight, and
+    serialising that to JSON can shift it across a day boundary - which would
+    both mislabel the row and corrupt the cursor, since the cursor IS the date.
+    As a string it means the same day everywhere.
+
+    routeid comes from the attendance row, not from the student. A child may be
+    moved to another route, and the register for an old day belongs to the route
+    that actually drove it.
+*/
+/*
+    The four moments a run stamps on a student, as clock times.
+
+    Rendered in the school's timezone rather than handed over raw, for the same
+    reason attendance_date is: the day these times belong to was decided in
+    SCHOOL_TZ, so showing them in the reader's timezone could put a boarding at
+    23:40 on the row labelled the following morning. Formatting here keeps the
+    time and the date it sits beside describing the same instant.
+
+    A null stays null — an absent child was never boarded, and 00:00 would be a
+    lie rather than a blank.
+*/
+const PHASE_TIMES = `
+    to_char(a.morning_boarded_at AT TIME ZONE $TZ, 'HH24:MI') AS morning_boarded_at,
+    to_char(a.morning_arrived_at AT TIME ZONE $TZ, 'HH24:MI') AS morning_arrived_at,
+    to_char(a.afternoon_boarded_at AT TIME ZONE $TZ, 'HH24:MI') AS afternoon_boarded_at,
+    to_char(a.afternoon_dropped_off_at AT TIME ZONE $TZ, 'HH24:MI') AS afternoon_dropped_off_at
+`;
+
+async function getStudentAttendancePage({ studentid, from, to, cursor, limit }) {
+    //SCHOOL_TZ takes $1 so the time formatting can be shared; the filters are
+    //numbered from there.
+    const values = [SCHOOL_TZ];
+    const filters = studentAttendanceFilters(studentid, from, to, values.length);
+    values.push(...filters.values);
+    const where = filters.where;
+
+    /*
+        The cursor and the range are both bounds on the same column, and both
+        are kept. The range says which days the admin asked for; the cursor says
+        how far down them the reader has got. Dropping either one would either
+        restart the list at every page or page outside the range.
+    */
+    if(cursor !== null) {
+        values.push(cursor);
+        where.push(`a.attendance_date < $${values.length}::date`);
+    }
+
+    values.push(limit + 1);
+
+    const { rows } = await pool.query(`
+        SELECT a.id, a.routeid,
+               to_char(a.attendance_date, 'YYYY-MM-DD') AS attendance_date,
+               a.morning_status, a.afternoon_status,
+               ${PHASE_TIMES.replaceAll('$TZ', '$1')},
+               r.name AS route_name
+        FROM attendance a
+        LEFT JOIN routes r ON r.id = a.routeid
+        ${whereClause(where)}
+        ORDER BY a.attendance_date DESC
+        LIMIT $${values.length}
+    `, values);
+
+    return rows;
+}
+
+//How many days are in scope, for the header. Counted under the same filters
+//the page was read with, so the number and the rows always describe each other.
+async function countStudentAttendance({ studentid, from, to }) {
+    const { where, values } = studentAttendanceFilters(studentid, from, to);
+
+    const { rows } = await pool.query(`
+        SELECT COUNT(*)::int AS total
+        FROM attendance a
+        ${whereClause(where)}
+    `, values);
+
+    return rows[0].total;
+}
+
+/*
+    The same history with no paging, for the export.
+
+    Deliberately not the paged query with a huge limit: an export that silently
+    stopped at a page boundary would be worse than one that refused, and a
+    student's row count is bounded by the number of school days they have
+    attended.
+
+    The date range is respected - what the file holds is what the page was
+    showing - but there is no cursor: unpaged means every day in that range.
+
+    Seconds are kept here where the table shows only hours and minutes — a
+    spreadsheet is where someone goes to measure something.
+
+    The four times carry no date of their own. Repeating the row's own date in
+    every one of them made each cell wide enough that Excel could not fit it in
+    a default column and showed ###### instead of a value — a file that looks
+    broken on open. The date is already its own column, and every one of these
+    is stamped during that day's run.
+*/
+async function getStudentAttendanceAll({ studentid, from, to }) {
+    const values = [SCHOOL_TZ];
+    const filters = studentAttendanceFilters(studentid, from, to, values.length);
+    values.push(...filters.values);
+
+    const { rows } = await pool.query(`
+        SELECT to_char(a.attendance_date, 'YYYY-MM-DD') AS attendance_date,
+               a.routeid,
+               r.name AS route_name,
+               a.morning_status, a.afternoon_status,
+               to_char(a.morning_boarded_at AT TIME ZONE $1, 'HH24:MI:SS') AS morning_boarded_at,
+               to_char(a.morning_arrived_at AT TIME ZONE $1, 'HH24:MI:SS') AS morning_arrived_at,
+               to_char(a.afternoon_boarded_at AT TIME ZONE $1, 'HH24:MI:SS') AS afternoon_boarded_at,
+               to_char(a.afternoon_dropped_off_at AT TIME ZONE $1, 'HH24:MI:SS') AS afternoon_dropped_off_at
+        FROM attendance a
+        LEFT JOIN routes r ON r.id = a.routeid
+        ${whereClause(filters.where)}
+        ORDER BY a.attendance_date DESC
+    `, values);
+
+    return rows;
+}
+
+/* ---------------------------------------------------------------------------
+   ONE SCHOOL'S ATTENDANCE
+
+   Every child at a school, every day, newest first — optionally narrowed to one
+   route and to a date range.
+
+   The school comes from the STUDENT, not from the route. Routes carry a
+   schoolid of their own, but attendance is a fact about a child, and a child
+   belongs to the school they attend even on a day a different school's bus
+   collected them.
+
+   students is joined inner rather than left, which is not a loss here: the
+   filter is on the student's school, so a row without a student could not match
+   it under any join.
+--------------------------------------------------------------------------- */
+const SCHOOL_ATTENDANCE_FROM = `
+    FROM attendance a
+    JOIN students s ON s.id = a.studentid
+    LEFT JOIN users u ON u.id = s.parentid
+    LEFT JOIN routes r ON r.id = a.routeid
+`;
+
+function schoolAttendanceFilters(schoolid, routeid, from, to, startAt = 0) {
+    const values = [];
+    const where = [];
+    const at = () => startAt + values.length;
+
+    values.push(schoolid);
+    where.push(`s.schoolid = $${at()}`);
+
+    if(routeid !== null && routeid !== undefined) {
+        values.push(routeid);
+        where.push(`a.routeid = $${at()}`);
+    }
+
+    //Inclusive at both ends: an admin asking for the 1st to the 30th means the
+    //30th to be in it.
+    if(from) {
+        values.push(from);
+        where.push(`a.attendance_date >= $${at()}::date`);
+    }
+
+    if(to) {
+        values.push(to);
+        where.push(`a.attendance_date <= $${at()}::date`);
+    }
+
+    return { where, values };
+}
+
+async function getSchoolAttendancePage({ schoolid, routeid, from, to, cursor, limit }) {
+    //SCHOOL_TZ takes $1 so the time formatting can be shared; the filters are
+    //numbered from there.
+    const values = [SCHOOL_TZ];
+    const filters = schoolAttendanceFilters(schoolid, routeid, from, to, values.length);
+    values.push(...filters.values);
+    const where = filters.where;
+
+    if(cursor !== null) {
+        values.push(cursor.date, cursor.id);
+        //Compared as a pair: the date decides, and the id breaks the ties that
+        //a whole school's worth of rows on one day produces.
+        where.push(`(a.attendance_date, a.id) < ($${values.length - 1}::date, $${values.length})`);
+    }
+
+    values.push(limit + 1);
+
+    const { rows } = await pool.query(`
+        SELECT a.id, a.routeid, a.studentid,
+               to_char(a.attendance_date, 'YYYY-MM-DD') AS attendance_date,
+               a.morning_status, a.afternoon_status,
+               ${PHASE_TIMES.replaceAll('$TZ', '$1')},
+               s.first_name AS student_name,
+               CONCAT(u.first_name, ' ', u.last_name) AS parent_name,
+               r.name AS route_name
+        ${SCHOOL_ATTENDANCE_FROM}
+        ${whereClause(where)}
+        ORDER BY a.attendance_date DESC, a.id DESC
+        LIMIT $${values.length}
+    `, values);
+
+    return rows;
+}
+
+async function countSchoolAttendance({ schoolid, routeid, from, to }) {
+    const { where, values } = schoolAttendanceFilters(schoolid, routeid, from, to);
+
+    const { rows } = await pool.query(`
+        SELECT COUNT(*)::int AS total
+        ${SCHOOL_ATTENDANCE_FROM}
+        ${whereClause(where)}
+    `, values);
+
+    return rows[0].total;
+}
+
+/*
+    The same thing unpaged, for the export.
+
+    routeid is deliberately absent from the signature rather than passed as
+    null: the export is always every route, and a parameter that only ever holds
+    one value invites somebody to pass the other one.
+*/
+async function getSchoolAttendanceAll({ schoolid, from, to }) {
+    const values = [SCHOOL_TZ];
+    const filters = schoolAttendanceFilters(schoolid, null, from, to, values.length);
+    values.push(...filters.values);
+
+    const { rows } = await pool.query(`
+        SELECT to_char(a.attendance_date, 'YYYY-MM-DD') AS attendance_date,
+               s.first_name AS student_name,
+               CONCAT(u.first_name, ' ', u.last_name) AS parent_name,
+               r.name AS route_name,
+               a.morning_status, a.afternoon_status,
+               to_char(a.morning_boarded_at AT TIME ZONE $1, 'HH24:MI:SS') AS morning_boarded_at,
+               to_char(a.morning_arrived_at AT TIME ZONE $1, 'HH24:MI:SS') AS morning_arrived_at,
+               to_char(a.afternoon_boarded_at AT TIME ZONE $1, 'HH24:MI:SS') AS afternoon_boarded_at,
+               to_char(a.afternoon_dropped_off_at AT TIME ZONE $1, 'HH24:MI:SS') AS afternoon_dropped_off_at
+        ${SCHOOL_ATTENDANCE_FROM}
+        ${whereClause(filters.where)}
+        ORDER BY a.attendance_date DESC, s.first_name
+    `, values);
+
+    return rows;
+}
+
+//The school's own name, for the export's filename and sheet.
+async function getSchoolName(schoolid) {
+    const { rows } = await pool.query("SELECT id, name FROM school WHERE id = $1", [schoolid]);
+    return rows[0] ?? null;
+}
+
 async function restartTrip(routeid) {
   return withTransaction(async (client) => {
     await client.query("UPDATE routes SET morning_status = null, afternoon_status = null, morning_started_at = NULL, afternoon_started_at = NULL, morning_completed_at = NULL, afternoon_completed_at = NULL WHERE id = $1", [routeid]);
@@ -830,5 +1152,13 @@ module.exports = {
     absentAfternoon,
     adminOverrideAttendance,
     getAttendance,
+    getStudentSummary,
+    getStudentAttendancePage,
+    countStudentAttendance,
+    getStudentAttendanceAll,
+    getSchoolAttendancePage,
+    countSchoolAttendance,
+    getSchoolAttendanceAll,
+    getSchoolName,
     restartTrip
 }
