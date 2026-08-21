@@ -218,8 +218,33 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
         //The stations were measured against that geometry, so they die with it.
         await client.query("UPDATE waypoints SET station = NULL, leg_distance = NULL, leg_duration = NULL WHERE routeid = $1", [routeid]);
 
-        const { rows } = await client.query("SELECT * FROM waypoints WHERE routeid = $1", [routeid]);
-        
+        /*
+            Read back in the same shape getWaypointsByRoute sends, because the
+            client replaces its whole waypoint list with this answer.
+
+            student_name is not a column - it is composed from the two joins
+            below - so a plain SELECT * returned rows that still carried
+            studentid but had lost the name, and every student stop redrew as
+            "No student attached" even though the link in the database was
+            untouched.
+
+            CONCAT rather than concatenation with ||, matching the read above:
+            it treats a null as an empty string, so a stop with no student comes
+            back as whitespace the client already trims away rather than as a
+            null that would have to be special-cased.
+        */
+        const { rows } = await client.query(`
+            SELECT w.*,
+                   CONCAT(s.first_name, ' ', u.first_name, ' ', u.last_name) AS student_name
+            FROM waypoints w
+            LEFT JOIN students s
+                ON s.id = w.studentid
+            LEFT JOIN users u
+                ON u.id = s.parentid
+            WHERE w.routeid = $1
+            ORDER BY w.sort_number
+        `, [routeid]);
+
         await client.query("COMMIT");
         return rows;
     } catch(e) {
