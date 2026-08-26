@@ -4,6 +4,7 @@ const app = express();
 const http = require("http");
 const server = http.createServer(app);
 const cors = require("cors");
+const helmet = require("helmet");
 const cookieParser = require('cookie-parser');
 const authRouter = require("./routes/authRouter.js");
 const protectedRouter = require("./routes/protectedRouter.js");
@@ -26,6 +27,33 @@ const corsOptions = {
     }, 
     credentials: true
 }
+/*
+    Railway terminates TLS and forwards over plain HTTP, so without this Express
+    believes every connection is insecure and that every caller is the proxy.
+    That second part is what matters: the rate limiters key on req.ip, and one
+    shared key would mean the whole world sharing one budget.
+
+    1, not true: it trusts exactly one hop - Railway's own proxy. `true` trusts
+    the entire chain, which lets a caller put whatever they like in
+    X-Forwarded-For and hand themselves a fresh rate-limit budget per request.
+*/
+app.set("trust proxy", 1);
+
+/*
+    Security headers. Most of what helmet does is aimed at pages - CSP,
+    clickjacking - and means little for an API that only ever answers JSON. The
+    parts that earn their place here are HSTS, which stops a browser ever
+    retrying this domain over plain HTTP, nosniff, and dropping the
+    X-Powered-By: Express header that currently announces the stack.
+
+    crossOriginResourcePolicy has to be widened from helmet's same-origin
+    default: the client is served from another origin entirely, and the xlsx
+    exports are fetched cross-origin from it.
+*/
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());

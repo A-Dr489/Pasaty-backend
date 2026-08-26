@@ -72,7 +72,7 @@ exports.postRegister = [validatorRegister, async (req, res) => {
         })
     } catch(e) {
         console.log("Server Error (register): " + e);
-        res.status(500).json({message: "Internal server error " + e.message});
+        res.status(500).json({message: "Internal server error" });
     }
 }]
 
@@ -138,7 +138,7 @@ exports.postLogin = [validatorLogin, async (req, res) => {
         })
     } catch(e) {
         console.log("Server Error (login): " + e);
-        res.status(500).json({message: "Internal server error " + e.message});
+        res.status(500).json({message: "Internal server error" });
     }
 }]
 
@@ -160,12 +160,44 @@ exports.postRefresh = async (req, res) => {
             return res.status(403).json({ message: 'Refresh token revoked' });
         }
 
+        /*
+            The account's current version, not the one baked into this token.
+
+            Logging in bumps users.version, which is what makes this system
+            single-session: every access token issued before that stops being
+            accepted. But a login only ADDS a refresh token row, it does not
+            remove the old device's - so the check above still passed for a
+            superseded session, and this endpoint handed back a brand new access
+            token stamped with the OLD version. authenticateUser then rejected
+            that token on every request, and because refreshing had "worked" the
+            client was never told the session was over: the old phone sat there
+            erroring instead of returning to the login screen.
+
+            The row is deleted on the way out. It can never produce a usable
+            token again, so leaving it would mean the table quietly filling with
+            dead sessions and this branch being re-run for each one.
+        */
+        const current = await db.checkTokenVersion(decoded.userid);
+        if (current.length === 0) {
+            return res.status(403).json({ message: 'User not found' });
+        }
+
+        if (decoded.version !== current[0].version) {
+            await db.deleteRefreshToken(refreshToken);
+            //Same code authenticateUser sends, so a client only has to learn
+            //one signal for "this session is finished, sign in again".
+            return res.status(403).json({
+                message: 'Session terminated. Please login again.',
+                code: 'SESSION_TERMINATED'
+            });
+        }
+
         const accessToken = generateAccessToken({userid: decoded.userid, version: decoded.version, role: decoded.role});
 
         res.json({ accessToken: accessToken });
     } catch(e) {
         console.log("Server Error (refresh): " + e);
-        res.status(500).json({message: "Internal server error " + e.message});
+        res.status(500).json({message: "Internal server error" });
     }
 }
 
@@ -201,6 +233,6 @@ exports.postLogout = async (req, res) => {
         res.json({ message: 'Logged out successfully' });
     } catch(e) {
         console.log("Server Error (logout): " + e);
-        res.status(500).json({message: "Internal server error " + e.message});
+        res.status(500).json({message: "Internal server error" });
     }
 }

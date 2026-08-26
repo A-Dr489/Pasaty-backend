@@ -24,6 +24,6 @@ attendanceRouter.get("/school/:schoolid/export", authenticateUser, requiredRole(
 attendanceRouter.patch("/:attendanceid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.adminOverride);
 attendanceRouter.post("/:routeid/attendance", authenticateUser, requiredRole(ROLE.ADMIN, ROLE.DRIVER), attendanceController.routeAttendance);
 //MVP
-attendanceRouter.put("/restart/:routeid", authenticateUser, requiredRole(ROLE.ADMIN, ROLE.DRIVER, ROLE.DRIVER), attendanceController.restartTrip);
+attendanceRouter.put("/restart/:routeid", authenticateUser, requiredRole(ROLE.ADMIN, ROLE.DRIVER), attendanceController.restartTrip);
 
 module.exports = attendanceRouter;
