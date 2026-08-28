@@ -72,8 +72,8 @@ async function getOverview(date, phase) {
     SELECT
         (SELECT COUNT(*) FROM students)::int                         AS "students",
         (SELECT COUNT(*) FROM routes)::int                           AS "routes",
-        (SELECT COUNT(*) FROM users WHERE role = 'Driver')::int      AS "drivers",
-        (SELECT COUNT(*) FROM users WHERE role = 'Parent')::int      AS "parents",
+        (SELECT COUNT(*) FROM users WHERE role = 'driver')::int      AS "drivers",
+        (SELECT COUNT(*) FROM users WHERE role = 'parent')::int      AS "parents",
         (SELECT COUNT(*) FROM school)::int                           AS "schools",
         (SELECT COUNT(*) FROM students WHERE routeid IS NULL)::int   AS "studentsWithoutRoute",
         (SELECT COUNT(*) FROM routes   WHERE driverid IS NULL)::int  AS "routesWithoutDriver"`;

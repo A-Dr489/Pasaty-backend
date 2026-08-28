@@ -1133,6 +1133,88 @@ async function getSchoolName(schoolid) {
     return rows[0] ?? null;
 }
 
+/* ---------------------------------------------------------------------------
+   WHO THE BUS IS COMING TO NOW - MORNING
+
+   The lowest sort_number among today's students on this route who is still
+   waiting. Derived from the register and the stop order alone: no GPS, no route
+   geometry, no arrival estimate. That means it also works on a route whose
+   geometry was never generated, on waypoints with no station, and on a run
+   where the driver's phone is not reporting a location at all - none of which
+   an estimate-driven version could survive.
+
+   The events that can change the answer are exactly the ones that change a
+   status: starting the run, boarding a child, marking one absent.
+--------------------------------------------------------------------------- */
+async function claimNextUpMorning(routeid) {
+    /*
+        Chosen in two steps, and the order of the two is the whole correctness
+        argument.
+
+        The candidate is picked from status and stop order ONLY - deliberately
+        NOT filtered by whether it has already been notified. That filter looks
+        like an optimisation and is actually a bug: once the next child has been
+        told, it would make every later event look straight past them to the
+        child behind, and notify that parent while the bus is still standing at
+        the stop in front. The pointer has to be allowed to land on the same
+        child repeatedly.
+
+        The latch is what makes the landing count only once, and it lives in the
+        WHERE of the UPDATE rather than in a read-then-write, so two events
+        arriving together cannot both claim it: the second re-checks the row
+        after the first commits, finds it set, and returns nothing.
+
+        The waypoint join is on routeid as well as studentid. Joining on the
+        student alone - as the roster queries above do - multiplies the row out
+        once per route that student has a stop on, and the wrong route's
+        sort_number could then decide the order.
+    */
+    const { rows } = await pool.query(`
+        WITH next_up AS (
+            SELECT a.id
+            FROM attendance a
+            JOIN waypoints w
+                ON w.studentid = a.studentid
+                AND w.routeid = a.routeid
+            WHERE a.routeid = $1
+                AND a.attendance_date = (now() AT TIME ZONE $2)::date
+                AND (a.morning_status IS NULL OR a.morning_status = $3)
+            ORDER BY w.sort_number
+            LIMIT 1
+        )
+        UPDATE attendance a
+           SET morning_next_notified_at = now()
+          FROM next_up n
+         WHERE a.id = n.id
+           AND a.morning_next_notified_at IS NULL
+        RETURNING a.id AS attendanceid, a.studentid
+    `, [routeid, SCHOOL_TZ, ATTENDANCE_STATUS.WAITING]);
+
+    //Nothing claimed: either every child has been dealt with, or the one at the
+    //front has already been told and nothing has moved since.
+    if(rows.length === 0 || rows[0].studentid === null) return null;
+
+    /*
+        The name and the parent are read separately rather than joined into the
+        statement above. attendance.studentid is nullable, and a join would make
+        a row with no student unclaimable - which would wedge the pointer on it
+        for the rest of the run instead of stepping over it.
+    */
+    const { rows: student } = await pool.query(
+        "SELECT first_name, parentid FROM students WHERE id = $1",
+        [rows[0].studentid]
+    );
+    if(student.length === 0) return null;
+
+    return {
+        attendanceid: rows[0].attendanceid,
+        studentid: rows[0].studentid,
+        student_name: student[0].first_name,
+        //May be null: the claim still stands, there is simply nobody to tell.
+        parentid: student[0].parentid
+    };
+}
+
 async function restartTrip(routeid) {
   return withTransaction(async (client) => {
     await client.query("UPDATE routes SET morning_status = null, afternoon_status = null, morning_started_at = NULL, afternoon_started_at = NULL, morning_completed_at = NULL, afternoon_completed_at = NULL WHERE id = $1", [routeid]);
@@ -1156,6 +1238,7 @@ module.exports = {
     getStudentAttendancePage,
     countStudentAttendance,
     getStudentAttendanceAll,
+    claimNextUpMorning,
     getSchoolAttendancePage,
     countSchoolAttendance,
     getSchoolAttendanceAll,

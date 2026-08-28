@@ -42,6 +42,42 @@ function studentEvent(result, phase) {
     };
 }
 
+/*
+    Tells the parent of whoever the bus is coming to now.
+
+    Called after every event that can move the front of the queue: the run
+    starting, a child boarding, a child being marked absent. Working out who
+    that is belongs to the query - it is a question about the register, and
+    answering it here would mean keeping a copy of the stop order in two places.
+
+    Not awaited, and its failure is swallowed. A driver's tap must never be able
+    to fail because a notification did, and the claim inside is atomic, so the
+    worst a dropped call costs is one parent not hearing - never a duplicate,
+    and never the wrong child.
+*/
+function notifyNextUp(routeid) {
+    db.claimNextUpMorning(routeid)
+        .then((next) => {
+            //No claim means the front of the queue has not moved, or the run is
+            //over. A claim with no parent is a child nobody can be told about -
+            //the pointer has still correctly stepped past them.
+            if(!next || !next.parentid) return;
+
+            notify([next.parentid], {
+                kind: "next_up_morning",
+                name: next.student_name,
+                data: {
+                    type: "next_up",
+                    routeid: routeid,
+                    phase: "morning",
+                    studentid: next.studentid,
+                    attendanceid: next.attendanceid
+                }
+            });
+        })
+        .catch((e) => console.log("Push (next_up_morning) failed: " + e.message));
+}
+
 exports.startMorning = async (req, res, next) => {
     try {
         const routeid = Number(req.params.routeid);
@@ -60,6 +96,10 @@ exports.startMorning = async (req, res, next) => {
             kind: "run_started_morning",
             data: { type: "run_started", routeid: routeid, phase: "morning" }
         });
+
+        //The register exists as of now, so the first child on it is already the
+        //one the bus is coming to.
+        notifyNextUp(routeid);
 
         res.json({ route, students });
     } catch (err) {
@@ -91,6 +131,9 @@ exports.boardMorningStudent = async (req, res, next) => {
           name: result.student_name,
           data: studentEvent(result, "morning")
         });
+
+        //This child leaving the queue is what makes the one behind them next.
+        notifyNextUp(result.routeid);
       }
 
       res.json(result);
@@ -122,6 +165,9 @@ exports.absentMorningStudent = async (req, res, next) => {
           name: result.student_name,
           data: studentEvent(result, "morning")
         });
+
+        //A skipped child moves the queue on exactly as a boarded one does.
+        notifyNextUp(result.routeid);
       }
 
       res.json(result);

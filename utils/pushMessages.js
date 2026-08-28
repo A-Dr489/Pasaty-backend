@@ -44,6 +44,22 @@ const BRAND = {
     parent's children in a message that concerns all of them would be wrong.
 */
 const TEXT = {
+    /*
+        The bus has finished with the child before this one.
+
+        Deliberately says "on its way" and not a number of minutes: this fires
+        on the driver finishing the previous stop, and how long that takes to
+        become an arrival depends on the road. Promising a time here would be
+        making up a figure nothing in the system actually knows.
+
+        The Arabic is built the same way round for the gender reason above - the
+        bus is the subject ("الحافلة في طريقها"), so nothing has to agree with
+        the child.
+    */
+    next_up_morning: {
+        en: { body: "The bus is on its way to {name}" },
+        ar: { body: "الحافلة في طريقها إلى {name}" }
+    },
     boarded_morning: {
         en: { body: "{name} boarded the bus" },
         ar: { body: "تم صعود {name} إلى الحافلة" }
