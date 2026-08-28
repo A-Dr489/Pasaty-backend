@@ -20,6 +20,12 @@ async function withTransaction(fn) {
   }
 }
 //Helper Function
+/*
+    `from` is accepted and deliberately not enforced - see the matching note in
+    boardMorning. Allowing any source status is what lets a driver board a child
+    who was marked absent, which is the override planned absence relies on. Do
+    not start checking it without replacing that safety net.
+*/
 async function afternoonTransition(attendanceid, driverid, { from, to, tsColumn }) {
   return withTransaction(async (client) => {
     const { rows } = await client.query(
@@ -152,15 +158,35 @@ async function startMorningRoute(routeid, driverid) {
           [routeid, ROUTE_STATUS.IN_PROGRESS],
         );
 
-        //    Insert one WAITING attendance row per student, for school-local today.
-        //    ON CONFLICT keeps restart idempotent (no duplicate-day rows).
+        /*
+            Insert one attendance row per student, for school-local today.
+            ON CONFLICT keeps restart idempotent (no duplicate-day rows).
+
+            A child whose parent declared them absent for today starts ABSENT
+            rather than WAITING - the whole planned-absence feature, in one
+            LEFT JOIN. Everything downstream already treats ABSENT correctly:
+            the driver never surfaces them, the ETA omits them, the next-up
+            notification skips them, and the completion sweep leaves them alone.
+
+            The join is on the student and the date only, not the route. The
+            declaration is about a child not riding today, and it should still
+            hold if an admin moved them to a different bus after it was made.
+
+            With no planned_absence rows this is exactly the statement it
+            replaced - pa.studentid is null for every student, so every row
+            takes $3.
+        */
         await client.query(
         `INSERT INTO attendance (routeid, studentid, attendance_date, morning_status)
-            SELECT s.routeid, s.id, (now() AT TIME ZONE $2)::date, $3
+            SELECT s.routeid, s.id, (now() AT TIME ZONE $2)::date,
+                   CASE WHEN pa.studentid IS NULL THEN $3 ELSE $4 END
             FROM students s
+            LEFT JOIN planned_absence pa
+                ON pa.studentid = s.id
+                AND pa.date = (now() AT TIME ZONE $2)::date
             WHERE s.routeid = $1
             ON CONFLICT (routeid, studentid, attendance_date) DO NOTHING`,
-        [routeid, SCHOOL_TZ, ATTENDANCE_STATUS.WAITING]
+        [routeid, SCHOOL_TZ, ATTENDANCE_STATUS.WAITING, ATTENDANCE_STATUS.ABSENT]
         );
 
         //    Pickup list for the response + broadcast.
@@ -235,6 +261,15 @@ async function boardMorning(attendanceid, driverid) {
         boarded_at: row.morning_boarded_at,
       };
     }
+    /*
+        DO NOT RE-ENABLE without replacing planned absence first.
+
+        Allowing any source status is what lets a driver pick up a child whose
+        parent had declared them absent - the plan changed, and the child is
+        standing at the stop. That override is the entire safety net under the
+        planned absence feature: a declaration is advisory, and the driver is
+        the one who can actually see the child.
+    */
     // if (oldStatus !== ATTENDANCE_STATUS.WAITING) {
     //   throw httpError(409, `Cannot board from status ${oldStatus}`);
     // }
@@ -304,6 +339,15 @@ async function absentMorning(attendanceid, driverid) {
         new_status: oldStatus,
       };
     }
+    /*
+        DO NOT RE-ENABLE without replacing planned absence first.
+
+        Allowing any source status is what lets a driver pick up a child whose
+        parent had declared them absent - the plan changed, and the child is
+        standing at the stop. That override is the entire safety net under the
+        planned absence feature: a declaration is advisory, and the driver is
+        the one who can actually see the child.
+    */
     // if (oldStatus !== ATTENDANCE_STATUS.WAITING) {
     //   throw httpError(409, `Cannot board from status ${oldStatus}`);
     // }
@@ -1223,6 +1267,11 @@ async function restartTrip(routeid) {
 }
 
 module.exports = {
+    //Exported for plannedAbsenceQuery, whose live path writes attendance rows
+    //and must do it under the same BEGIN/COMMIT/ROLLBACK as everything else
+    //that touches them. Shared rather than copied, so there is one place the
+    //transaction handling can be got wrong.
+    withTransaction,
     startMorningRoute,
     boardMorning,
     absentMorning,

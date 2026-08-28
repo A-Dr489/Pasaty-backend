@@ -54,6 +54,10 @@ function studentEvent(result, phase) {
     to fail because a notification did, and the claim inside is atomic, so the
     worst a dropped call costs is one parent not hearing - never a duplicate,
     and never the wrong child.
+
+    Exported as well as used here: a parent declaring their child absent
+    mid-run moves the queue exactly as a driver's tap does, and has to tell the
+    same people.
 */
 function notifyNextUp(routeid) {
     db.claimNextUpMorning(routeid)
@@ -706,3 +710,5 @@ exports.restartTrip = async (req, res, next) => {
     next(err);
   }
 }
+//Exported so the parent-initiated absence path can move the queue too.
+exports.notifyNextUp = notifyNextUp;
