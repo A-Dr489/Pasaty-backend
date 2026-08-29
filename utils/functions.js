@@ -1,4 +1,4 @@
-const { SOCKET_EVENT } = require("./enum.js");
+const { SOCKET_EVENT, ROLE, PORTAL_ROLES } = require("./enum.js");
 
 const isPhoneNumber = (input) => {
     // Allows digits, spaces, +, -, and ()
@@ -17,6 +17,28 @@ class HttpError extends Error {
 }
 
 const httpError = (status, message) => new HttpError(status, message);
+
+/*
+  The sub-admin line, in one place.
+
+  A sub-admin runs the portal but may neither make nor manage another portal
+  account. Two separate things have to be refused for that to hold, and either
+  one on its own leaves the rule ornamental:
+
+    - granting a portal role, or a sub-admin simply creates an admin, or
+      promotes a parent it already controls into one;
+    - touching an account that already holds one, or a sub-admin demotes the
+      real admin to parent and takes the top of the tree that way instead.
+
+  Both are predicates rather than guards that throw, because the two callers
+  answer differently: authController replies in the { errors } shape its form
+  reads, usersController throws an httpError for the shared error handler.
+*/
+const canGrantRole = (actorRole, role) =>
+  !PORTAL_ROLES.includes(role) || actorRole === ROLE.ADMIN;
+
+const canManageUser = (actorRole, targetRole) =>
+  !PORTAL_ROLES.includes(targetRole) || actorRole === ROLE.ADMIN;
 
 /*
   Socket answers. A socket handler has no res and no next, so it can never
@@ -42,6 +64,8 @@ module.exports = {
   isPhoneNumber,
   HttpError,
   httpError,
+  canGrantRole,
+  canManageUser,
   socketOk,
   socketError
 }

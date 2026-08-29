@@ -2,7 +2,7 @@ const { Router } = require("express");
 const attendanceRouter = Router();
 const attendanceController = require("../controller/AttendanceController.js");
 const { authenticateUser, requiredRole } = require("../utils/authMiddleware.js");
-const { ROLE } = require("../utils/enum.js");
+const { ROLE, PORTAL_ROLES } = require("../utils/enum.js");
 
 attendanceRouter.post("/:routeid/morning/start", authenticateUser, requiredRole(ROLE.DRIVER), attendanceController.startMorning);
 attendanceRouter.post("/:attendanceid/morning/board", authenticateUser, requiredRole(ROLE.DRIVER), attendanceController.boardMorningStudent);
@@ -16,14 +16,14 @@ attendanceRouter.patch("/:attendanceid/afternoon/dropoff", authenticateUser, req
 attendanceRouter.post("/:routeid/afternoon/complete", authenticateUser, requiredRole(ROLE.DRIVER), attendanceController.completeAfternoon);
 
 //Ahead of the "/:attendanceid" patterns, so "student" is never read as an id.
-attendanceRouter.get("/student/:studentid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.studentAttendance);
-attendanceRouter.get("/student/:studentid/export", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.studentAttendanceExport);
-attendanceRouter.get("/school/:schoolid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.schoolAttendance);
-attendanceRouter.get("/school/:schoolid/export", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.schoolAttendanceExport);
+attendanceRouter.get("/student/:studentid", authenticateUser, requiredRole(...PORTAL_ROLES), attendanceController.studentAttendance);
+attendanceRouter.get("/student/:studentid/export", authenticateUser, requiredRole(...PORTAL_ROLES), attendanceController.studentAttendanceExport);
+attendanceRouter.get("/school/:schoolid", authenticateUser, requiredRole(...PORTAL_ROLES), attendanceController.schoolAttendance);
+attendanceRouter.get("/school/:schoolid/export", authenticateUser, requiredRole(...PORTAL_ROLES), attendanceController.schoolAttendanceExport);
 
-attendanceRouter.patch("/:attendanceid", authenticateUser, requiredRole(ROLE.ADMIN), attendanceController.adminOverride);
-attendanceRouter.post("/:routeid/attendance", authenticateUser, requiredRole(ROLE.ADMIN, ROLE.DRIVER), attendanceController.routeAttendance);
+attendanceRouter.patch("/:attendanceid", authenticateUser, requiredRole(...PORTAL_ROLES), attendanceController.adminOverride);
+attendanceRouter.post("/:routeid/attendance", authenticateUser, requiredRole(...PORTAL_ROLES, ROLE.DRIVER), attendanceController.routeAttendance);
 //MVP
-attendanceRouter.put("/restart/:routeid", authenticateUser, requiredRole(ROLE.ADMIN, ROLE.DRIVER), attendanceController.restartTrip);
+attendanceRouter.put("/restart/:routeid", authenticateUser, requiredRole(...PORTAL_ROLES, ROLE.DRIVER), attendanceController.restartTrip);
 
 module.exports = attendanceRouter;

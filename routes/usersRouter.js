@@ -2,19 +2,19 @@ const { Router } = require("express");
 const usersRouter = Router();
 const usersController = require('../controller/usersController.js');
 const { authenticateUser, requiredRole } = require("../utils/authMiddleware.js");
-const { ROLE } = require("../utils/enum.js");
+const { PORTAL_ROLES } = require("../utils/enum.js");
 
-usersRouter.get("/", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getAllUsers);
-usersRouter.get("/students/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getStudentFromParent);
-usersRouter.put("/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.updateUser);
-usersRouter.delete("/student/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.deleteStudent);
-usersRouter.delete("/user/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.deleteUser);
-usersRouter.get("/students", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getStudents);
-usersRouter.put("/student/:studentid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.updateStudent);
-usersRouter.get("/parent/:name", authenticateUser, requiredRole(ROLE.ADMIN), usersController.searchParent);
-usersRouter.put("/student/parent/:studentid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.updateStudentParent)
-usersRouter.get("/location/:routeid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getBusLocation);
-usersRouter.get("/tokens/:id", authenticateUser, requiredRole(ROLE.ADMIN), usersController.getUserTokens);
-usersRouter.delete("/tokens/:id/:tokenid", authenticateUser, requiredRole(ROLE.ADMIN), usersController.revokeUserToken);
+usersRouter.get("/", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getAllUsers);
+usersRouter.get("/students/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getStudentFromParent);
+usersRouter.put("/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.updateUser);
+usersRouter.delete("/student/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.deleteStudent);
+usersRouter.delete("/user/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.deleteUser);
+usersRouter.get("/students", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getStudents);
+usersRouter.put("/student/:studentid", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.updateStudent);
+usersRouter.get("/parent/:name", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.searchParent);
+usersRouter.put("/student/parent/:studentid", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.updateStudentParent)
+usersRouter.get("/location/:routeid", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getBusLocation);
+usersRouter.get("/tokens/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getUserTokens);
+usersRouter.delete("/tokens/:id/:tokenid", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.revokeUserToken);
 
 module.exports = usersRouter;

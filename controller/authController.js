@@ -4,6 +4,7 @@ const deviceDb = require("../storage/deviceQuery.js");
 const { body, validationResult } = require("express-validator");
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/jwtTools.js");
 const { ROLE } = require("../utils/enum.js");
+const { canGrantRole } = require("../utils/functions.js");
 
 const validatorRegister = [
     body("Fname").trim()
@@ -32,7 +33,17 @@ const validatorRegister = [
         } else {
             return true;
         }
-    })
+    }),
+
+    /*
+        The role was previously taken on trust and written straight into the
+        row, so any string at all became a role - and a typo'd one would have
+        matched no guard anywhere, leaving an account that could not be
+        repaired from the portal because no filter would list it.
+    */
+    body("role").trim()
+    .notEmpty().withMessage("Role is required")
+    .isIn(Object.values(ROLE)).withMessage("Invalid role")
 ]
 
 const validatorLogin = [
@@ -55,6 +66,20 @@ exports.postRegister = [validatorRegister, async (req, res) => {
         });
 
         return res.status(400).json({ errors: formattedErrors });   //400: bad request
+    }
+
+    /*
+        Which roles this caller may hand out depends on who they are, which the
+        validator chain above cannot see - it is only ever shown the body.
+
+        Answered in the same { errors } shape the validators use, so the form
+        renders it against the Role select like any other field error rather
+        than needing a second error path of its own.
+    */
+    if(!canGrantRole(req.user.role, req.body.role)) {
+        return res.status(403).json({
+            errors: { role: "Only an admin can create an admin or sub-admin account" }
+        });
     }
 
     try {

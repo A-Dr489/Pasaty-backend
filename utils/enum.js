@@ -1,8 +1,26 @@
 const ROLE = {
     ADMIN: "admin",
+    SUB_ADMIN: "sub-admin",
     PARENT: "parent",
     DRIVER: "driver"
 }
+
+/*
+    The two roles that reach the admin portal. They see exactly the same
+    screens - every route that used to read requiredRole(ROLE.ADMIN) now reads
+    this list - and differ only in who they may create and manage.
+
+    That difference is one rule, applied wherever a portal account could be
+    made or altered: only ROLE.ADMIN may touch a user whose role is in here.
+    A sub-admin therefore cannot mint another portal account, promote anyone
+    into one, or edit, delete or sign out an existing one, which means it can
+    never widen its own circle or lock the real admin out. Everything below
+    that line - parents, drivers, routes, schools, attendance - is open to it.
+
+    Kept as a list rather than repeated literals so that adding a third portal
+    role later is one edit here, not thirty across the routers.
+*/
+const PORTAL_ROLES = [ROLE.ADMIN, ROLE.SUB_ADMIN];
 
 const SOCKET_EVENT = {
     JOIN: "route:join",
@@ -40,6 +58,7 @@ const ATTENDANCE_STATUS = {
 
 module.exports = {
     ROLE,
+    PORTAL_ROLES,
     SOCKET_EVENT,
     PHASE,
     ROUTE_STATUS,

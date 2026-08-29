@@ -1,6 +1,6 @@
 const pool = require("./pool.js");
 const { httpError, isPhoneNumber } = require("../utils/functions.js");
-const { ROLE } = require("../utils/enum.js");
+const { ROLE, PORTAL_ROLES } = require("../utils/enum.js");
 const { whereClause } = require("../utils/pagination.js");
 
 const SCHOOL_TZ = process.env.SCHOOL_TZ;
@@ -56,6 +56,16 @@ function userFilters(excludeId, search, role) {
     The columns are listed rather than selected with *: users holds the
     password hash and the token version, and neither has any reason to travel
     to a browser.
+
+    Routes arrive aggregated rather than joined onto the row. Nothing stops one
+    driver holding two routes - routes.driverid has no unique constraint and
+    updateRoutesDriver does not check - and a plain join would then emit that
+    driver twice, which under keyset paging is not a cosmetic duplicate: the
+    page would carry fewer distinct users than limit, and the cursor would
+    still advance past both.
+
+    Only drivers are looked up. A parent has no route to be unassigned from,
+    so the column stays an empty array and the card says nothing.
 */
 async function getUsersPage({ excludeId, search, role, cursor, limit }) {
     const { where, values } = userFilters(excludeId, search, role);
@@ -69,8 +79,16 @@ async function getUsersPage({ excludeId, search, role, cursor, limit }) {
     values.push(limit + 1);
 
     const { rows } = await pool.query(`
-        SELECT u.id, u.first_name, u.last_name, u.phone, u.role, u.createdat
+        SELECT u.id, u.first_name, u.last_name, u.phone, u.role, u.createdat,
+        COALESCE(dr.routes, '[]'::json) AS routes
         FROM users u
+        LEFT JOIN (
+            SELECT r.driverid,
+            json_agg(json_build_object('id', r.id, 'name', r.name) ORDER BY r.id) AS routes
+            FROM routes r
+            WHERE r.driverid IS NOT NULL
+            GROUP BY r.driverid
+        ) dr ON dr.driverid = u.id AND u.role = 'driver'
         ${whereClause(where)}
         ORDER BY u.id DESC
         LIMIT $${values.length}
@@ -169,6 +187,14 @@ async function deleteStudentById(id) {
 
 async function deleteUserById(userid) {
     await pool.query("DELETE FROM users WHERE id = $1", [userid]);
+}
+
+//The one fact the portal guard needs about an account before changing it: what
+//it currently is. null when there is no such user, which the caller reads as a
+//404 rather than as "not a portal account".
+async function getUserRole(userid) {
+    const { rows } = await pool.query("SELECT role FROM users WHERE id = $1", [userid]);
+    return rows[0]?.role ?? null;
 }
 
 /* ---------------------------------------------------------------------------
@@ -379,12 +405,12 @@ async function getStopsForEta(routeid) {
 }
 
 /*
-    Who may watch a route room: an admin sees every route, a driver only the
-    routes assigned to them, a parent only a route one of their students rides.
-    Any other role gets nothing.
+    Who may watch a route room: the portal roles see every route, a driver only
+    the routes assigned to them, a parent only a route one of their students
+    rides. Any other role gets nothing.
 */
 async function canAccessRoute(userid, role, routeid) {
-    if(role === ROLE.ADMIN) {
+    if(PORTAL_ROLES.includes(role)) {
         return true;
     }
 
@@ -481,6 +507,7 @@ module.exports = {
     updateUser,
     deleteStudentById,
     deleteUserById,
+    getUserRole,
     getStudentsPage,
     countStudents,
     updateStudent,

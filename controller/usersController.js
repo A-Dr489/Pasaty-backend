@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 const db = require("../storage/usersQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
-const { httpError, socketOk, socketError } = require("../utils/functions.js");
+const { httpError, socketOk, socketError, canGrantRole, canManageUser } = require("../utils/functions.js");
 const { readPage, buildPage, readIdFilter } = require("../utils/pagination.js");
 const { ROLE, ROUTE_STATUS, SOCKET_EVENT, PHASE } = require("../utils/enum.js");
 const { snapToLine } = require("../utils/geo.js");
@@ -61,6 +61,17 @@ exports.revokeUserToken = async (req, res, next) => {
         const tokenid = Number(req.params.tokenid);
         if(!Number.isInteger(userid)) throw httpError(400, "Invalid userid");
         if(!Number.isInteger(tokenid)) throw httpError(400, "Invalid token id");
+
+        //Signing an admin out is not an escalation, but it is a way for a
+        //sub-admin to keep one out of the portal, so it sits behind the same
+        //line as editing and deleting. Reading the sessions does not - a
+        //sub-admin may see a portal account, just not act on it.
+        const targetRole = await db.getUserRole(userid);
+        if(targetRole === null) throw httpError(404, "No user with this id");
+
+        if(!canManageUser(req.user.role, targetRole)) {
+            throw httpError(403, "Only an admin can revoke an admin or sub-admin session");
+        }
 
         const revoked = await db.revokeRefreshToken(tokenid, userid);
         if(!revoked) throw httpError(404, "No session found for this user");
@@ -133,8 +144,33 @@ exports.getStudentFromParent = async (req, res) => {
 
 exports.updateUser = async (req, res, next) => {
     const {first_name, last_name, phone, role, students} = req.body;
-    const userid = req.params.id;
+    const userid = Number(req.params.id);
     try {
+        if(!Number.isInteger(userid)) throw httpError(400, "Invalid userid");
+        //Checked here as well as on register: this is the other way a row's
+        //role gets written, and an unrecognised one matches no guard anywhere.
+        if(!Object.values(ROLE).includes(role)) throw httpError(400, "Invalid role");
+
+        /*
+            Both halves of the sub-admin rule, because either alone has a way
+            round it. Without the first, a sub-admin edits the admin's own row
+            down to parent; without the second, it promotes a parent it already
+            controls up to admin and signs in as them.
+
+            The target is read before either check so that a missing user is a
+            404 rather than a 403 - "no such account" and "not yours to touch"
+            are different answers and should not be confused.
+        */
+        const targetRole = await db.getUserRole(userid);
+        if(targetRole === null) throw httpError(404, "No user with this id");
+
+        if(!canManageUser(req.user.role, targetRole)) {
+            throw httpError(403, "Only an admin can manage an admin or sub-admin account");
+        }
+        if(!canGrantRole(req.user.role, role)) {
+            throw httpError(403, "Only an admin can grant the admin or sub-admin role");
+        }
+
         await db.updateUser(userid, first_name, last_name, phone, role, students);
         res.json({message: "Done!"});
     } catch(err) {
@@ -156,15 +192,30 @@ exports.deleteStudent = async (req, res, next) => {
     }
 }
 
-exports.deleteUser = async (req, res) => {
-    const userid = req.params.id;
+//Routed through next(err) like deleteStudent above it, rather than reporting
+//every failure as a 500: the guard below answers 403 and 404, and both would
+//otherwise reach the browser as "Internal Server Error".
+exports.deleteUser = async (req, res, next) => {
+    const userid = Number(req.params.id);
     try{
+        if(!Number.isInteger(userid)) throw httpError(400, "Invalid userid");
+
+        //Deleting an admin is the crudest version of the same attack the role
+        //checks in updateUser cover: remove the people above you instead of
+        //promoting yourself past them.
+        const targetRole = await db.getUserRole(userid);
+        if(targetRole === null) throw httpError(404, "No user with this id");
+
+        if(!canManageUser(req.user.role, targetRole)) {
+            throw httpError(403, "Only an admin can delete an admin or sub-admin account");
+        }
+
         await db.deleteUserById(userid);
 
         res.json({message: "Done!"});
-    } catch(e) {
-        console.log("Server Error (deleteUser): " + e);
-        res.status(500).json({message: "Internal Server Error"});
+    } catch(err) {
+        console.log("Server Error (deleteUser): " + err);
+        next(err);
     }
 }
 

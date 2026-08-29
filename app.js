@@ -74,9 +74,20 @@ app.get("/test", async (req, res) => {
         res.status(500).json({message: "Internal Server Error"})
     }
 })
+/*
+    err.message is only passed on when the error carries a status, which means
+    it came from an httpError() call in a controller and was written to be read
+    by whoever asked - "Only an admin can delete an admin account", "No user
+    with this id".
+
+    Anything without one arrived from a library, and its message describes our
+    internals rather than the caller's mistake: a postgres constraint name, a
+    column, a stack. Those are answered flatly. It cost nothing to say and it
+    was how a foreign key on driver_location ended up quoted back to a browser.
+*/
 app.use((err, _req, res, _next) => {
     const status = err.status || 500;
-    res.status(status).json({ message: err.message || 'Internal Server error' });
+    res.status(status).json({ message: err.status ? err.message : 'Internal Server error' });
 });
 
 socketHandler(server);
