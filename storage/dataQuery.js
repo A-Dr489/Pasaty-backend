@@ -37,6 +37,41 @@ async function updateSchool(schoolid, name, supervisor, phone, city) {
 
 const TERMINAL = ['ARRIVED', 'DROPPED_OFF', 'ABSENT'];
 
+const SCHOOL_TZ = process.env.SCHOOL_TZ;
+
+/* ---------------------------------------------------------------------------
+   WHEN A ROUTE'S STATUS ACTUALLY HAPPENED
+
+   routes.morning_status and its two timestamps are current-state columns, not
+   a log: they describe the last run of that route, whenever that was, and no
+   query here may assume it was today.
+
+   The timestamp is chosen by the status rather than coalesced, because
+   startMorningRoute stamps started_at and leaves the previous run's
+   completed_at exactly where it was. A route out on the road right now still
+   carries yesterday's completion, so COALESCE(completed, started) would date
+   this morning's run to yesterday afternoon. The status is what says which of
+   the two columns is the live one.
+
+   Written as a fragment taking the phase by name, and only ever called with
+   the two literals below. The caller's phase still reaches postgres as a bound
+   parameter, never as text.
+--------------------------------------------------------------------------- */
+const runAt = (phase) => `
+    CASE r.${phase}_status
+        WHEN 'COMPLETED'   THEN r.${phase}_completed_at
+        WHEN 'IN_PROGRESS' THEN r.${phase}_started_at
+        ELSE COALESCE(r.${phase}_completed_at, r.${phase}_started_at)
+    END`;
+
+//The status, but only when the run it describes belongs to the day being asked
+//about. Anything older reads as NULL, which the fleet tally already counts as
+//not started - which is what an idle route is, today.
+const statusOn = (phase, date, tz) => `
+    CASE WHEN (${runAt(phase)} AT TIME ZONE ${tz})::date = ${date}::date
+         THEN r.${phase}_status
+    END`;
+
 async function getOverview(date, phase) {
     const FLEET_SQL = `
     SELECT
@@ -45,9 +80,11 @@ async function getOverview(date, phase) {
         COUNT(*) FILTER (WHERE st = 'COMPLETED')::int   AS "completed",
         COUNT(*) FILTER (WHERE st = 'CANCELLED')::int   AS "cancelled"
     FROM (
-        SELECT CASE WHEN $1 = 'morning' THEN morning_status
-                    ELSE afternoon_status END AS st
-        FROM routes
+        SELECT CASE WHEN $1 = 'morning'
+                    THEN ${statusOn('morning', '$2', '$3')}
+                    ELSE ${statusOn('afternoon', '$2', '$3')}
+               END AS st
+        FROM routes r
     ) r`;
 
     const TALLY_SQL = `
@@ -102,7 +139,7 @@ async function getOverview(date, phase) {
     ORDER BY s.first_name, p.first_name`;
 
     const [fleet, tally, counts, absent] = await Promise.all([
-        pool.query(FLEET_SQL, [phase]),
+        pool.query(FLEET_SQL, [phase, date, SCHOOL_TZ]),
         pool.query(TALLY_SQL, [date]),
         pool.query(COUNTS_SQL),
         pool.query(ABSENT_SQL, [date]),
@@ -154,8 +191,19 @@ async function getRouteBoard(date, phase) {
         r.id, r.name,
         d.id AS "driverId", d.first_name AS "driverFirstName",
         d.last_name AS "driverLastName", d.phone AS "driverPhone",
-        r.morning_status,   r.morning_started_at,   r.morning_completed_at,
-        r.afternoon_status, r.afternoon_started_at, r.afternoon_completed_at,
+        r.morning_status,
+        r.afternoon_status,
+        /*
+            Split into a calendar day and a clock time, both in the school's
+            timezone, because the client has to say which day a run belongs to
+            and a raw timestamp would leave that to whatever zone the admin's
+            laptop happens to be set to. Same boundary attendance_date uses, so
+            a run and its register can never disagree about which day it was.
+        */
+        to_char(${runAt('morning')}   AT TIME ZONE $4, 'YYYY-MM-DD') AS "morningDate",
+        to_char(${runAt('morning')}   AT TIME ZONE $4, 'HH24:MI')    AS "morningTime",
+        to_char(${runAt('afternoon')} AT TIME ZONE $4, 'YYYY-MM-DD') AS "afternoonDate",
+        to_char(${runAt('afternoon')} AT TIME ZONE $4, 'HH24:MI')    AS "afternoonTime",
         COALESCE(sc.n, 0)::int                AS "studentCount",
         COALESCE(pr.settled, 0)::int          AS "settled",
         COALESCE(pr.total, sc.n, 0)::int      AS "total"
@@ -179,7 +227,7 @@ async function getRouteBoard(date, phase) {
     ) pr ON pr.routeid = r.id
     ORDER BY r.id`;
 
-    const { rows } = await pool.query(BOARD_SQL, [date, phase, TERMINAL]);
+    const { rows } = await pool.query(BOARD_SQL, [date, phase, TERMINAL, SCHOOL_TZ]);
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -193,15 +241,22 @@ async function getRouteBoard(date, phase) {
           }
         : null,
       studentCount: r.studentCount,
+      /*
+            date and time replace the two raw timestamps this used to send.
+            The client rendered completedAt ?? startedAt as a bare clock time,
+            which is how a run from three weeks ago came to read as "07:42"
+            under a panel captioned "today". A day it cannot drop is harder to
+            misreport than one it has to work out.
+      */
       morning: {
         status: r.morning_status,
-        startedAt: r.morning_started_at,
-        completedAt: r.morning_completed_at,
+        date: r.morningDate,
+        time: r.morningTime,
       },
       afternoon: {
         status: r.afternoon_status,
-        startedAt: r.afternoon_started_at,
-        completedAt: r.afternoon_completed_at,
+        date: r.afternoonDate,
+        time: r.afternoonTime,
       },
       progress: { phase, settled: r.settled, total: r.total },
     }));
