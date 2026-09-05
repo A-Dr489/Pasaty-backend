@@ -58,7 +58,7 @@ async function declareDay(studentid, date, createdby) {
         `INSERT INTO planned_absence (studentid, date, createdby)
          VALUES ($1, $2::date, $3)
          ON CONFLICT (studentid, date)
-         DO UPDATE SET createdat = planned_absence.createdat
+         DO UPDATE SET created_at = planned_absence.created_at
          RETURNING id, to_char(date, 'YYYY-MM-DD') AS date, (xmax = 0) AS created`,
         [studentid, date, createdby]
     );
@@ -90,7 +90,11 @@ async function listForParent(parentid, from, to) {
         `SELECT pa.id, pa.studentid,
                 to_char(pa.date, 'YYYY-MM-DD') AS date,
                 s.first_name AS student_name,
-                pa.createdat
+                /* The column is created_at, the only snake_case timestamp in a
+                   schema that otherwise spells it createdat. Aliased back so
+                   the field the mobile app was given keeps its documented
+                   name - the table's spelling is not the API's problem. */
+                pa.created_at AS createdat
            FROM planned_absence pa
            JOIN students s ON s.id = pa.studentid
           WHERE s.parentid = $1
