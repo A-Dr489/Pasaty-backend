@@ -2,7 +2,7 @@ const bcrypt = require("bcryptjs");
 const db = require("../storage/authenticationQuery.js");
 const deviceDb = require("../storage/deviceQuery.js");
 const { body, validationResult } = require("express-validator");
-const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/jwtTools.js");
+const { generateAccessToken, generateRefreshToken, inspectRefreshToken } = require("../utils/jwtTools.js");
 const { ROLE } = require("../utils/enum.js");
 const { canGrantRole, schoolScope } = require("../utils/functions.js");
 
@@ -196,8 +196,31 @@ exports.postRefresh = async (req, res) => {
             return res.status(401).json({ message: 'Refresh token not found' });
         }
 
-        const decoded = verifyRefreshToken(refreshToken);
+        /*
+            A token that simply ran out is the one dead session nothing used to
+            clean up.
+
+            The version-mismatch branch below deletes a superseded row, and
+            logout deletes the row it is handed, but a session that expired on
+            its own - the app was closed for a fortnight, the phone was put in a
+            drawer - failed here and left its row behind for good. That is what
+            the refreshtokens table had been filling with.
+
+            Deleted by the token string, which is the only thing identifying the
+            row at this point: there is no verified payload to take a userid
+            from. That is the same proof-of-possession postLogout relies on, and
+            it is safe for the same reason - only the exact stored string
+            matches, so a forged or truncated cookie deletes nothing.
+
+            Expiry ONLY. A signature failure arrives here identically, and it is
+            also what every token in the table would report if
+            REFRESH_TOKEN_SECRET were ever rotated or misconfigured. Deleting on
+            that would turn one bad deploy into every account on the service
+            being signed out.
+        */
+        const { payload: decoded, expired } = inspectRefreshToken(refreshToken);
         if (!decoded) {
+            if (expired) await db.deleteRefreshToken(refreshToken);
             return res.status(403).json({ message: 'Invalid refresh token' });
         }
 
