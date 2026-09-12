@@ -41,6 +41,55 @@ const canManageUser = (actorRole, targetRole) =>
   !PORTAL_ROLES.includes(targetRole) || actorRole === ROLE.ADMIN;
 
 /*
+  Which school this caller is confined to, or null for "every school".
+
+  Every scoped query in the app reads its filter from here, so the one thing
+  that must never happen is a school account resolving to null: null is not a
+  neutral value, it is full access to all four schools. The role is therefore
+  what decides, and the id is only consulted after it.
+
+  A school account whose link has gone - its school deleted, or the row never
+  written - is refused outright rather than falling through to unscoped. That is
+  the direction this has to fail in: an account that manages no school should be
+  able to do nothing, not everything.
+*/
+const NO_SCHOOL = -1;
+
+const schoolScope = (user) => {
+  if (user?.role !== ROLE.SCHOOL) return null;
+  return Number.isInteger(user.schoolid) ? user.schoolid : NO_SCHOOL;
+};
+
+//True when this caller may touch rows belonging to `schoolid`. Reads naturally
+//at a call site - assertInScope(req.user, route.schoolid) - and keeps the
+//null-means-everything rule in one place rather than at every comparison.
+const inSchoolScope = (user, schoolid) => {
+  const scope = schoolScope(user);
+  return scope === null || (schoolid != null && Number(schoolid) === scope);
+};
+
+/*
+  Out of scope is answered as 404, never 403.
+
+  403 would confirm the row exists, which hands a school account a way to probe
+  another school's routes and students one id at a time. "Not yours" and "not
+  there" must be indistinguishable from outside.
+*/
+const assertInScope = (user, schoolid, what = "record") => {
+  if (!inSchoolScope(user, schoolid)) throw httpError(404, `No ${what} with this id`);
+};
+
+/*
+  The school filter a list endpoint should actually run.
+
+  For a school account its own school always wins, whatever the query string
+  asked for: the filter is a convenience for an admin choosing among schools,
+  and a constraint for everyone else. Returning the requested value for an
+  unscoped caller leaves those endpoints behaving exactly as before.
+*/
+const scopedSchoolFilter = (user, requested) => schoolScope(user) ?? requested;
+
+/*
   Socket answers. A socket handler has no res and no next, so it can never
   reach the express error handler in app.js - these two stand in for it.
   The ack callback is optional: socket.io only passes one when the client
@@ -66,6 +115,11 @@ module.exports = {
   httpError,
   canGrantRole,
   canManageUser,
+  schoolScope,
+  inSchoolScope,
+  assertInScope,
+  scopedSchoolFilter,
+  NO_SCHOOL,
   socketOk,
   socketError
 }

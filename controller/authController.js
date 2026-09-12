@@ -4,7 +4,7 @@ const deviceDb = require("../storage/deviceQuery.js");
 const { body, validationResult } = require("express-validator");
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require("../utils/jwtTools.js");
 const { ROLE } = require("../utils/enum.js");
-const { canGrantRole } = require("../utils/functions.js");
+const { canGrantRole, schoolScope } = require("../utils/functions.js");
 
 const validatorRegister = [
     body("Fname").trim()
@@ -78,18 +78,39 @@ exports.postRegister = [validatorRegister, async (req, res) => {
     */
     if(!canGrantRole(req.user.role, req.body.role)) {
         return res.status(403).json({
-            errors: { role: "Only an admin can create an admin or sub-admin account" }
+            errors: { role: "Only an admin can create an admin, sub-admin or school account" }
         });
     }
+
+    /*
+        A school account is only half an account without its school: the role
+        reaches every portal endpoint, and schoolScope refuses one that resolves
+        to no school. So the school is required at creation rather than being
+        something to set afterwards.
+    */
+    const linkedSchool = Number(req.body.schoolid);
+    if(req.body.role === ROLE.SCHOOL && !Number.isInteger(linkedSchool)) {
+        return res.status(400).json({
+            errors: { schoolid: "A school account needs the school it manages" }
+        });
+    }
+
+    /*
+        A school account registering a parent may only put children in its own
+        school. Forced rather than validated: the picker is not shown to them,
+        so a schoolid in the body is not something they chose - it is something
+        that arrived, and the scope is the only answer worth trusting.
+    */
+    const scope = schoolScope(req.user);
 
     try {
         const hashedPassword = await bcrypt.hash(req.body.password, 10);
 
-        let rows; 
+        let rows;
         if(req.body.students.length === 0 && req.body.role !== ROLE.PARENT) {
-            rows = await db.addUser(req.body.Fname, req.body.Lname, req.body.phone, req.body.role, hashedPassword); 
+            rows = await db.addUser(req.body.Fname, req.body.Lname, req.body.phone, req.body.role, hashedPassword, linkedSchool);
         } else {
-            rows = await db.addParent(req.body.Fname, req.body.Lname, req.body.phone, req.body.role, hashedPassword, req.body.students);
+            rows = await db.addParent(req.body.Fname, req.body.Lname, req.body.phone, req.body.role, hashedPassword, req.body.students, scope);
         }
         res.status(201).json({
             message: "Account created successfully",

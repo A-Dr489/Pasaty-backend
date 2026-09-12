@@ -1,5 +1,5 @@
 const pool = require("./pool.js");
-const { httpError, isPhoneNumber } = require("../utils/functions.js");
+const { httpError, isPhoneNumber, schoolScope } = require("../utils/functions.js");
 const { ROLE, PORTAL_ROLES } = require("../utils/enum.js");
 const { whereClause } = require("../utils/pagination.js");
 
@@ -16,10 +16,33 @@ const SCHOOL_TZ = process.env.SCHOOL_TZ;
    interpolated text: the search term reaches postgres as a value, never as
    SQL, whatever an admin types into the box.
 --------------------------------------------------------------------------- */
-function userFilters(excludeId, search, role) {
+function userFilters(excludeId, search, role, scope = null) {
     //An admin has no business deleting or editing themselves from the roster.
     const values = [excludeId];
     const where = ["u.id <> $1"];
+
+    /*
+        The school account's view of the roster.
+
+        Parents and drivers carry no school, so theirs is derived from what they
+        are attached to. The third arm - a driver on no route at all - is what
+        stops a school account losing a driver the moment it creates one; see
+        USER_IN_SCOPE in scopeQuery.js, which is the same rule for a single id.
+
+        A portal account matches none of the three, which is exactly why a
+        school account cannot see, edit or delete an admin, a sub-admin, or
+        another school account.
+    */
+    if(scope !== null) {
+        values.push(scope);
+        const i = values.length;
+        where.push(`(
+            EXISTS (SELECT 1 FROM students s WHERE s.parentid = u.id AND s.schoolid = $${i})
+            OR EXISTS (SELECT 1 FROM routes r WHERE r.driverid = u.id AND r.schoolid = $${i})
+            OR (u.role = '${ROLE.DRIVER}'
+                AND NOT EXISTS (SELECT 1 FROM routes r WHERE r.driverid = u.id))
+        )`);
+    }
 
     if(role) {
         values.push(role);
@@ -67,8 +90,8 @@ function userFilters(excludeId, search, role) {
     Only drivers are looked up. A parent has no route to be unassigned from,
     so the column stays an empty array and the card says nothing.
 */
-async function getUsersPage({ excludeId, search, role, cursor, limit }) {
-    const { where, values } = userFilters(excludeId, search, role);
+async function getUsersPage({ excludeId, search, role, scope = null, cursor, limit }) {
+    const { where, values } = userFilters(excludeId, search, role, scope);
 
     if(cursor !== null) {
         values.push(cursor);
@@ -99,8 +122,8 @@ async function getUsersPage({ excludeId, search, role, cursor, limit }) {
 
 //How many rows the current filters match in total, which is the only number a
 //paged list cannot work out for itself.
-async function countUsers({ excludeId, search, role }) {
-    const { where, values } = userFilters(excludeId, search, role);
+async function countUsers({ excludeId, search, role, scope = null }) {
+    const { where, values } = userFilters(excludeId, search, role, scope);
     const { rows } = await pool.query(`
         SELECT COUNT(*)::int AS total
         FROM users u
@@ -110,14 +133,23 @@ async function countUsers({ excludeId, search, role }) {
     return rows[0].total;
 }
 
-async function getStudentFromParentId(parentid) {
+/*
+    A parent's children, narrowed to the caller's school when there is one.
+
+    This is where the two-school parent is handled: the row is one account and
+    both school accounts can reach it, but each is shown only the child who
+    attends its own school. Hiding the parent from both would leave a child at
+    your school with a guardian you cannot see.
+*/
+async function getStudentFromParentId(parentid, scope = null) {
     const { rows } = await pool.query(`
         SELECT s.*, sk.name AS school_name, r.name AS route_name
         FROM students s
         LEFT JOIN school sk ON s.schoolid = sk.id
         LEFT JOIN routes r ON s.routeid = r.id
-        WHERE parentid = $1
-    `, [parentid]);
+        WHERE s.parentid = $1
+          AND ($2::int IS NULL OR s.schoolid = $2)
+    `, [parentid, scope]);
     return rows;
 }
 
@@ -289,15 +321,20 @@ async function updateStudent(studentid, first_name, schoolid) {
     await pool.query("UPDATE students SET first_name = $2, schoolid = $3 WHERE id = $1", [studentid, first_name, schoolid]);
 }
 
-async function searchParentName(name) {
+//A parent is this school's if any of their children is at it. No third arm for
+//the parentless case that searchDriverName has: a parent with no children is
+//not attached to anything and there is nothing to attach them to here either.
+async function searchParentName(name, scope = null) {
     const cleanName = `%${name}%`;
     const { rows } = await pool.query(`
         SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) as full_name, phone
         FROM users u
         WHERE CONCAT(u.first_name, ' ', u.last_name) ILIKE $1
         AND u.role = 'parent'
+        AND ($2::int IS NULL
+             OR EXISTS (SELECT 1 FROM students s WHERE s.parentid = u.id AND s.schoolid = $2))
         LIMIT 10;
-    `, [cleanName]);
+    `, [cleanName, scope]);
     return rows;
 }
 
@@ -405,11 +442,28 @@ async function getStopsForEta(routeid) {
 }
 
 /*
-    Who may watch a route room: the portal roles see every route, a driver only
-    the routes assigned to them, a parent only a route one of their students
-    rides. Any other role gets nothing.
+    Who may watch a route room: an admin or sub-admin sees every route, a school
+    account only its own school's, a driver only the routes assigned to them, a
+    parent only a route one of their students rides. Any other role gets
+    nothing.
+
+    The school account is checked here rather than being waved through with the
+    other portal roles because the live map is the one place scoping could be
+    bypassed entirely - the HTTP endpoints could all be sealed and a socket
+    join would still stream another school's bus position and its register.
+
+    `user` rather than a bare role, because this one needs the school too.
 */
-async function canAccessRoute(userid, role, routeid) {
+async function canAccessRoute(userid, role, routeid, user = null) {
+    if(role === ROLE.SCHOOL) {
+        const scope = schoolScope(user ?? { role, schoolid: null });
+        const { rowCount } = await pool.query(
+            "SELECT 1 FROM routes WHERE id = $1 AND schoolid = $2",
+            [routeid, scope]
+        );
+        return rowCount > 0;
+    }
+
     if(PORTAL_ROLES.includes(role)) {
         return true;
     }

@@ -1,8 +1,14 @@
-const { httpError } = require("../utils/functions.js");
+const { httpError, schoolScope, assertInScope } = require("../utils/functions.js");
+const { ROLE } = require("../utils/enum.js");
 const db = require("../storage/dataQuery.js");
 
 exports.createSchool = async (req, res, next) => {
     try{
+        //A school account manages one school and does not open new ones. This
+        //is a 403 rather than the 404 the scoped reads use: there is no record
+        //being probed for here, only an action being refused.
+        if(req.user.role === ROLE.SCHOOL) throw httpError(403, "Only an admin can create a school");
+
         const { name, supervisor, supervisor_phone, city } = req.body;
         if(!name) throw httpError(400, "Invalid Name");
         if(!city) throw httpError(400, "Invalid City");
@@ -23,7 +29,9 @@ exports.searchSchool = async (req, res, next) => {
         const search = name?.trim();
         if(!name || !search) throw httpError(400, "School name was not provided");
         
-        const rows = await db.searchSchoolByName(search);
+        //The scope goes into the query rather than filtering its result, so the
+        //LIMIT inside counts only rows this caller may see.
+        const rows = await db.searchSchoolByName(search, schoolScope(req.user));
         if(rows.length === 0) throw httpError(400, "No school found");
 
         res.json({result: rows});
@@ -35,7 +43,7 @@ exports.searchSchool = async (req, res, next) => {
 
 exports.getAllSchools = async (req, res, next) => {
     try{
-        const rows = await db.getSchools();
+        const rows = await db.getSchools(schoolScope(req.user));
         if(rows.length === 0) throw httpError(404, "No schools found");
 
         res.json({schools: rows});
@@ -53,6 +61,9 @@ exports.updateSchool = async (req, res, next) => {
         const schoolid = Number(req.params.schoolid);
         if (!Number.isInteger(schoolid)) throw httpError(400, 'Invalid school ID');
         if(!cleanName || !cleanSupervisor || !supervisor_phone || !city) throw httpError(400, "Insufficient Data");
+
+        //A school account may edit its own school's details and no other's.
+        assertInScope(req.user, schoolid, "school");
 
         await db.updateSchool(schoolid, cleanName, cleanSupervisor, supervisor_phone, city);
 
@@ -85,7 +96,7 @@ exports.getOverview = async (req, res, next) => {
         if (!date) throw httpError(400, 'Invalid date');
         if (!PHASES.includes(phase)) throw httpError(400, 'Invalid phase');
 
-        const overview = await db.getOverview(date, phase);
+        const overview = await db.getOverview(date, phase, schoolScope(req.user));
 
         res.json(overview);
     } catch(err) {
@@ -102,7 +113,7 @@ exports.getRouteBoard = async (req, res, next) => {
     if (!date) throw httpError(400, 'Invalid date');
     if (!PHASES.includes(phase)) throw httpError(400, 'Invalid phase');
 
-    const routes = await db.getRouteBoard(date, phase);
+    const routes = await db.getRouteBoard(date, phase, schoolScope(req.user));
 
     res.json(routes);
   } catch (err) {
@@ -123,7 +134,7 @@ exports.getAttendanceTrend = async (req, res, next) => {
     const days = (new Date(to) - new Date(from)) / 86400000;
     if (days > MAX_TREND_DAYS) throw httpError(400, 'Range too large');
 
-    const trend = await db.getAttendanceTrend(from, to);
+    const trend = await db.getAttendanceTrend(from, to, schoolScope(req.user));
 
     res.json(trend);
   } catch (err) {

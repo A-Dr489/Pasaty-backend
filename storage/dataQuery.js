@@ -11,19 +11,29 @@ async function addSchool(name, supervisor, supervisor_phone, city) {
     return rows.length === 0
 }
 
-async function searchSchoolByName(name) {
+/*
+    scope is null for an admin or sub-admin and a school id for a school
+    account. Both reads take it the same way: `$2 IS NULL OR id = $2` leaves the
+    unscoped case exactly as it was and narrows the scoped one to a single row,
+    without two versions of the statement to keep in step.
+*/
+async function searchSchoolByName(name, scope = null) {
     const cleanName = `%${name}%`;
     const { rows } = await pool.query(`
         SELECT id, name AS school_name
         FROM school
         WHERE name ILIKE $1
+          AND ($2::int IS NULL OR id = $2)
         LIMIT 10;
-    `, [cleanName]);
+    `, [cleanName, scope]);
     return rows;
 }
 
-async function getSchools() {
-    const { rows } = await pool.query("SELECT * FROM school");
+async function getSchools(scope = null) {
+    const { rows } = await pool.query(
+        "SELECT * FROM school WHERE $1::int IS NULL OR id = $1",
+        [scope]
+    );
     return rows;
 }
 
@@ -72,7 +82,17 @@ const statusOn = (phase, date, tz) => `
          THEN r.${phase}_status
     END`;
 
-async function getOverview(date, phase) {
+/*
+    scope is null for an admin or sub-admin and a school id for a school
+    account. Every statement below takes it as a parameter and narrows on it the
+    same way - `$n IS NULL OR ... = $n` - so the unscoped case runs exactly the
+    query it always did and there is only one version of each to maintain.
+
+    An attendance row reaches its school through its route, and a student
+    through students.schoolid. The two agree because saveDraftChanges refuses a
+    waypoint that would put a child on another school's route.
+*/
+async function getOverview(date, phase, scope = null) {
     const FLEET_SQL = `
     SELECT
         COUNT(*) FILTER (WHERE st IS NULL)::int         AS "notStarted",
@@ -85,35 +105,55 @@ async function getOverview(date, phase) {
                     ELSE ${statusOn('afternoon', '$2', '$3')}
                END AS st
         FROM routes r
+        WHERE $4::int IS NULL OR r.schoolid = $4
     ) r`;
 
     const TALLY_SQL = `
     SELECT
         COUNT(*)::int                                                AS "total",
-        COUNT(*) FILTER (WHERE morning_status   = 'WAITING')::int     AS "mWaiting",
-        COUNT(*) FILTER (WHERE morning_status   = 'BOARDED')::int     AS "mBoarded",
-        COUNT(*) FILTER (WHERE morning_status   = 'ARRIVED')::int     AS "mArrived",
-        COUNT(*) FILTER (WHERE morning_status   = 'ABSENT')::int      AS "mAbsent",
-        COUNT(*) FILTER (WHERE afternoon_status = 'WAITING')::int     AS "aWaiting",
-        COUNT(*) FILTER (WHERE afternoon_status = 'BOARDED')::int     AS "aBoarded",
-        COUNT(*) FILTER (WHERE afternoon_status = 'DROPPED_OFF')::int AS "aDropped",
-        COUNT(*) FILTER (WHERE afternoon_status = 'ABSENT')::int      AS "aAbsent",
-        ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE morning_status = 'ABSENT'))
+        COUNT(*) FILTER (WHERE a.morning_status   = 'WAITING')::int     AS "mWaiting",
+        COUNT(*) FILTER (WHERE a.morning_status   = 'BOARDED')::int     AS "mBoarded",
+        COUNT(*) FILTER (WHERE a.morning_status   = 'ARRIVED')::int     AS "mArrived",
+        COUNT(*) FILTER (WHERE a.morning_status   = 'ABSENT')::int      AS "mAbsent",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'WAITING')::int     AS "aWaiting",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'BOARDED')::int     AS "aBoarded",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'DROPPED_OFF')::int AS "aDropped",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT')::int      AS "aAbsent",
+        ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.morning_status = 'ABSENT'))
             / NULLIF(COUNT(*), 0), 1)::float8                       AS "morningRate",
-        ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE afternoon_status = 'ABSENT'))
+        ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT'))
             / NULLIF(COUNT(*), 0), 1)::float8                       AS "afternoonRate"
-    FROM attendance
-    WHERE attendance_date = $1`;
+    FROM attendance a
+    JOIN routes r ON r.id = a.routeid
+    WHERE a.attendance_date = $1
+      AND ($2::int IS NULL OR r.schoolid = $2)`;
 
     const COUNTS_SQL = `
     SELECT
-        (SELECT COUNT(*) FROM students)::int                         AS "students",
-        (SELECT COUNT(*) FROM routes)::int                           AS "routes",
-        (SELECT COUNT(*) FROM users WHERE role = 'driver')::int      AS "drivers",
-        (SELECT COUNT(*) FROM users WHERE role = 'parent')::int      AS "parents",
-        (SELECT COUNT(*) FROM school)::int                           AS "schools",
-        (SELECT COUNT(*) FROM students WHERE routeid IS NULL)::int   AS "studentsWithoutRoute",
-        (SELECT COUNT(*) FROM routes   WHERE driverid IS NULL)::int  AS "routesWithoutDriver"`;
+        (SELECT COUNT(*) FROM students
+          WHERE $1::int IS NULL OR schoolid = $1)::int               AS "students",
+        (SELECT COUNT(*) FROM routes
+          WHERE $1::int IS NULL OR schoolid = $1)::int               AS "routes",
+        /* Drivers and parents have no school of their own, so they are counted
+           the way they are listed - see userFilters in usersQuery.js. The same
+           three arms, including the routeless driver who belongs to nobody. */
+        (SELECT COUNT(*) FROM users u
+          WHERE u.role = 'driver'
+            AND ($1::int IS NULL
+                 OR EXISTS (SELECT 1 FROM routes r WHERE r.driverid = u.id AND r.schoolid = $1)
+                 OR NOT EXISTS (SELECT 1 FROM routes r WHERE r.driverid = u.id)))::int AS "drivers",
+        (SELECT COUNT(*) FROM users u
+          WHERE u.role = 'parent'
+            AND ($1::int IS NULL
+                 OR EXISTS (SELECT 1 FROM students s WHERE s.parentid = u.id AND s.schoolid = $1)))::int AS "parents",
+        (SELECT COUNT(*) FROM school
+          WHERE $1::int IS NULL OR id = $1)::int                     AS "schools",
+        (SELECT COUNT(*) FROM students
+          WHERE routeid IS NULL
+            AND ($1::int IS NULL OR schoolid = $1))::int             AS "studentsWithoutRoute",
+        (SELECT COUNT(*) FROM routes
+          WHERE driverid IS NULL
+            AND ($1::int IS NULL OR schoolid = $1))::int             AS "routesWithoutDriver"`;
 
     const ABSENT_SQL = `
     SELECT
@@ -136,13 +176,14 @@ async function getOverview(date, phase) {
     LEFT JOIN users p ON p.id = s.parentid
     WHERE a.attendance_date = $1
         AND (a.morning_status = 'ABSENT' OR a.afternoon_status = 'ABSENT')
+        AND ($2::int IS NULL OR r.schoolid = $2)
     ORDER BY s.first_name, p.first_name`;
 
     const [fleet, tally, counts, absent] = await Promise.all([
-        pool.query(FLEET_SQL, [phase, date, SCHOOL_TZ]),
-        pool.query(TALLY_SQL, [date]),
-        pool.query(COUNTS_SQL),
-        pool.query(ABSENT_SQL, [date]),
+        pool.query(FLEET_SQL, [phase, date, SCHOOL_TZ, scope]),
+        pool.query(TALLY_SQL, [date, scope]),
+        pool.query(COUNTS_SQL, [scope]),
+        pool.query(ABSENT_SQL, [date, scope]),
     ]);
     const t = tally.rows[0];
     const c = counts.rows[0];
@@ -185,7 +226,7 @@ async function getOverview(date, phase) {
     };
 }
 
-async function getRouteBoard(date, phase) {
+async function getRouteBoard(date, phase, scope = null) {
     const BOARD_SQL = `
     SELECT
         r.id, r.name,
@@ -225,9 +266,10 @@ async function getRouteBoard(date, phase) {
         WHERE attendance_date = $1
         GROUP BY routeid
     ) pr ON pr.routeid = r.id
+    WHERE $5::int IS NULL OR r.schoolid = $5
     ORDER BY r.id`;
 
-    const { rows } = await pool.query(BOARD_SQL, [date, phase, TERMINAL, SCHOOL_TZ]);
+    const { rows } = await pool.query(BOARD_SQL, [date, phase, TERMINAL, SCHOOL_TZ, scope]);
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
@@ -262,21 +304,23 @@ async function getRouteBoard(date, phase) {
     }));
 }
 
-async function getAttendanceTrend(from, to) {
+async function getAttendanceTrend(from, to, scope = null) {
     const TREND_SQL = `
     SELECT
-    TO_CHAR(attendance_date, 'YYYY-MM-DD') AS "date",
-    ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE morning_status = 'ABSENT'))
+    TO_CHAR(a.attendance_date, 'YYYY-MM-DD') AS "date",
+    ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.morning_status = 'ABSENT'))
             / NULLIF(COUNT(*), 0), 1)::float8 AS "morning",
-    ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE afternoon_status = 'ABSENT'))
+    ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT'))
             / NULLIF(COUNT(*), 0), 1)::float8 AS "afternoon",
-    (attendance_date = CURRENT_DATE)        AS "provisional"
-    FROM attendance
-    WHERE attendance_date BETWEEN $1 AND $2
-    GROUP BY attendance_date
-    ORDER BY attendance_date`;
+    (a.attendance_date = CURRENT_DATE)        AS "provisional"
+    FROM attendance a
+    JOIN routes r ON r.id = a.routeid
+    WHERE a.attendance_date BETWEEN $1 AND $2
+      AND ($3::int IS NULL OR r.schoolid = $3)
+    GROUP BY a.attendance_date
+    ORDER BY a.attendance_date`;
 
-    const { rows } = await pool.query(TREND_SQL, [from, to]);
+    const { rows } = await pool.query(TREND_SQL, [from, to, scope]);
     return rows;
 }
 

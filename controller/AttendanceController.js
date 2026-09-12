@@ -1,6 +1,7 @@
 const db = require("../storage/AttendanceQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
-const { httpError } = require("../utils/functions.js");
+const { httpError, assertInScope } = require("../utils/functions.js");
+const { assertRouteInScope, assertStudentInScope, assertAttendanceInScope } = require("../storage/scopeQuery.js");
 const { SOCKET_EVENT, ATTENDANCE_STATUS } = require("../utils/enum.js");
 const {
   readDatePage,
@@ -427,6 +428,7 @@ exports.adminOverride = async (req, res, next) => {
   try {
       const attendanceid = Number(req.params.attendanceid);
       if (!Number.isInteger(attendanceid)) throw httpError(400, 'Invalid attendanceid');
+      await assertAttendanceInScope(req.user, attendanceid);
   
       // Derive phase from whichever status key is present.
       let phase, status;
@@ -494,6 +496,7 @@ exports.studentAttendance = async (req, res, next) => {
   try {
       const filters = readStudentFilters(req);
       const { limit, cursor } = readDatePage(req.query);
+      await assertStudentInScope(req.user, filters.studentid);
 
       const student = cursor === null ? await db.getStudentSummary(filters.studentid) : undefined;
       if (student === null) throw httpError(404, "Student not found");
@@ -548,6 +551,7 @@ const EXPORT_COLUMNS = [
 exports.studentAttendanceExport = async (req, res, next) => {
   try {
       const filters = readStudentFilters(req);
+      await assertStudentInScope(req.user, filters.studentid);
 
       const student = await db.getStudentSummary(filters.studentid);
       if (!student) throw httpError(404, "Student not found");
@@ -605,6 +609,7 @@ function readSchoolFilters(req) {
 exports.schoolAttendance = async (req, res, next) => {
   try {
       const filters = readSchoolFilters(req);
+      assertInScope(req.user, filters.schoolid, "school");
       const routeid = readIdFilter(req.query.routeid, "route");
       const { limit, cursor } = readDateIdPage(req.query);
 
@@ -655,6 +660,7 @@ const SCHOOL_EXPORT_COLUMNS = [
 exports.schoolAttendanceExport = async (req, res, next) => {
   try {
       const filters = readSchoolFilters(req);
+      assertInScope(req.user, filters.schoolid, "school");
 
       const school = await db.getSchoolName(filters.schoolid);
       if (!school) throw httpError(404, "School not found");
@@ -688,6 +694,7 @@ exports.routeAttendance = async (req, res, next) => {
       const { date } = req.body;
       if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
       if(!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw httpError(400, "date must be provided as YYYY-MM-DD")
+      await assertRouteInScope(req.user, routeid);
 
       const students = await db.getAttendance(routeid, date);
       res.json({ routeid: routeid, students });
@@ -702,6 +709,7 @@ exports.restartTrip = async (req, res, next) => {
   try {
     const routeid = Number(req.params.routeid);
     if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
+    await assertRouteInScope(req.user, routeid);
     await db.restartTrip(routeid);
 
     res.json({message: "Done!"});

@@ -83,12 +83,13 @@ async function countRoutes({ search, schoolid }) {
     schoolid rides along so the page can narrow the list to the school already
     chosen without asking again.Driver
 */
-async function getRouteOptions() {
+async function getRouteOptions(scope = null) {
     const { rows } = await pool.query(`
         SELECT id, name, schoolid
         FROM routes
+        WHERE $1::int IS NULL OR schoolid = $1
         ORDER BY name
-    `);
+    `, [scope]);
     return rows;
 }
 
@@ -159,6 +160,37 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
             const studentid = item.studentid === "" || item.type !== "student" ? null : item.studentid;
             if (studentid !== null) {
                 studentRouteMap.set(Number(studentid), Number(routeid));
+            }
+        }
+
+        /*
+            A child may only ride a route belonging to their own school.
+
+            students.schoolid and routes.schoolid were independent, so nothing
+            stopped one school's student being dropped onto another's route -
+            and once there they appear in that route's register, its attendance
+            exports and its live board. That is a hole in the school scope with
+            nothing to do with roles: filtering reads by routes.schoolid cannot
+            help when the foreign child is genuinely on the route.
+
+            Checked inside the transaction against the rows about to be written,
+            so a mixed save is refused whole rather than half-applied.
+        */
+        const attaching = [...studentRouteMap.entries()]
+            .filter(([, boundTo]) => boundTo !== null)
+            .map(([studentid]) => studentid);
+
+        if(attaching.length > 0) {
+            const { rows: foreign } = await client.query(`
+                SELECT s.id, s.first_name
+                FROM students s
+                WHERE s.id = ANY($1::int[])
+                  AND s.schoolid IS DISTINCT FROM (SELECT schoolid FROM routes WHERE id = $2)
+            `, [attaching, routeid]);
+
+            if(foreign.length > 0) {
+                throw httpError(400,
+                    `${foreign[0].first_name} belongs to a different school than this route`);
             }
         }
 
@@ -328,7 +360,7 @@ async function getRouteWithDistance(routeid) {
     return rows;
 }
 
-async function searchStudentName(name) {
+async function searchStudentName(name, scope = null) {
     const cleanName = `%${name}%`;
     const { rows } = await pool.query(`
         SELECT s.id, CONCAT(s.first_name, ' ', u.first_name, ' ', u.last_name) as full_name
@@ -336,9 +368,10 @@ async function searchStudentName(name) {
         JOIN users u
         ON u.id = s.parentid
         WHERE CONCAT(s.first_name, ' ', u.first_name, ' ', u.last_name) ILIKE $1
+        AND ($2::int IS NULL OR s.schoolid = $2)
         ORDER BY full_name
         LIMIT 20;
-    `, [cleanName]);
+    `, [cleanName, scope]);
     return rows;
 }
 
@@ -346,15 +379,26 @@ async function deleteRouteById(routeid) {
     await pool.query("DELETE FROM routes WHERE id = $1", [routeid]);
 }
 
-async function searchDriverName(name) {
+/*
+    Drivers a caller may attach to one of its routes.
+
+    The scoped arm is the same rule scopeQuery's USER_IN_SCOPE applies: drivers
+    already on one of this school's routes, plus drivers on no route at all -
+    who belong to nobody, and who a school account has to be able to find or it
+    could never assign a driver it just created.
+*/
+async function searchDriverName(name, scope = null) {
     const cleanName = `%${name}%`;
     const { rows } = await pool.query(`
         SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) as full_name
         FROM users u
         WHERE CONCAT(u.first_name, ' ', u.last_name) ILIKE $1
         AND u.role = 'driver'
+        AND ($2::int IS NULL
+             OR EXISTS (SELECT 1 FROM routes r WHERE r.driverid = u.id AND r.schoolid = $2)
+             OR NOT EXISTS (SELECT 1 FROM routes r WHERE r.driverid = u.id))
         LIMIT 10;
-    `, [cleanName]);
+    `, [cleanName, scope]);
     return rows;
 }
 

@@ -28,7 +28,12 @@ async function authenticateUser(req, res, next) {
             });
         }
 
-        req.user = decoded;
+        /*
+            The school link comes off the row just read, never off the token.
+            A token is issued once and lived with for its lifetime; which school
+            an account manages is a fact about the account right now.
+        */
+        req.user = { ...decoded, schoolid: rows[0].schoolid };
         next();
     } catch(e) {
         console.log('Server Error (authentication middleware):' + e);
@@ -57,7 +62,9 @@ async function authenticateSocket(socket, next) {
             return next(err);
         }
 
-        socket.user = decoded;
+        //Same rule as the HTTP path: the scope is a property of the account,
+        //read fresh, not of the token the socket connected with.
+        socket.user = { ...decoded, schoolid: rows[0].schoolid };
         next();
     } catch(e) {
         next(new Error("Invalid Token Or expired"));

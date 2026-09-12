@@ -1,7 +1,8 @@
 const jwt = require("jsonwebtoken");
 const db = require("../storage/usersQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
-const { httpError, socketOk, socketError, canGrantRole, canManageUser } = require("../utils/functions.js");
+const { httpError, socketOk, socketError, canGrantRole, canManageUser, schoolScope, scopedSchoolFilter } = require("../utils/functions.js");
+const { assertRouteInScope, assertStudentInScope, assertUserInScope } = require("../storage/scopeQuery.js");
 const { readPage, buildPage, readIdFilter } = require("../utils/pagination.js");
 const { ROLE, ROUTE_STATUS, SOCKET_EVENT, PHASE } = require("../utils/enum.js");
 const { snapToLine } = require("../utils/geo.js");
@@ -29,6 +30,7 @@ exports.getUserTokens = async (req, res, next) => {
     try{
         const userid = Number(req.params.id);
         if(!Number.isInteger(userid)) throw httpError(400, "Invalid userid");
+        await assertUserInScope(req.user, userid);
 
         const rows = await db.getRefreshTokensByUser(userid);
         const now = Date.now();
@@ -68,6 +70,8 @@ exports.revokeUserToken = async (req, res, next) => {
         //sub-admin may see a portal account, just not act on it.
         const targetRole = await db.getUserRole(userid);
         if(targetRole === null) throw httpError(404, "No user with this id");
+
+        await assertUserInScope(req.user, userid);
 
         if(!canManageUser(req.user.role, targetRole)) {
             throw httpError(403, "Only an admin can revoke an admin or sub-admin session");
@@ -109,7 +113,17 @@ exports.getAllUsers = async (req, res, next) => {
 
         if(role && !Object.values(ROLE).includes(role)) throw httpError(400, "Invalid role");
 
-        const filters = { excludeId: req.user.userid, search: search, role: role };
+        /*
+            The scope is part of the filter set, so the header count and the
+            rows can never describe different populations - the same reason
+            userFilters feeds both the page and the count.
+        */
+        const filters = {
+            excludeId: req.user.userid,
+            search: search,
+            role: role,
+            scope: schoolScope(req.user)
+        };
 
         const rows = await db.getUsersPage({...filters, cursor: cursor, limit: limit});
         const page = buildPage(rows, limit);
@@ -127,18 +141,25 @@ exports.getAllUsers = async (req, res, next) => {
     }
 }
 
-exports.getStudentFromParent = async (req, res) => {
+exports.getStudentFromParent = async (req, res, next) => {
     try{
         const parentid = req.params.id;
-        const rows = await db.getStudentFromParentId(parentid);
+        await assertUserInScope(req.user, parentid);
+
+        /*
+            The scope narrows the children too, not just the parent. This is the
+            two-school parent: both school accounts can see them, and each is
+            shown only the child who attends its own school.
+        */
+        const rows = await db.getStudentFromParentId(parentid, schoolScope(req.user));
         if(rows.length === 0) {
             return res.status(404).json({message: "No students assigned"});
         }
 
         res.json({students: rows});
-    } catch(e) {
-        console.log("Server Error (getStudentFromParent): " + e);
-        res.status(500).json({message: "Internal Server Error"});
+    } catch(err) {
+        console.log("Server Error (getStudentFromParent): " + err);
+        next(err);
     }
 }
 
@@ -164,6 +185,18 @@ exports.updateUser = async (req, res, next) => {
         const targetRole = await db.getUserRole(userid);
         if(targetRole === null) throw httpError(404, "No user with this id");
 
+        /*
+            Scope before role, and the order matters.
+
+            The role check answers 403 - "that is a portal account" - which is
+            the right answer for a sub-admin, who can see the row and simply may
+            not touch it. For a school account it would be a disclosure: the row
+            is not in its scope at all, and saying why hands it a way to find
+            every admin in the system one id at a time. Out of scope is 404
+            first, and only then is the role rule consulted.
+        */
+        await assertUserInScope(req.user, userid);
+
         if(!canManageUser(req.user.role, targetRole)) {
             throw httpError(403, "Only an admin can manage an admin or sub-admin account");
         }
@@ -182,6 +215,8 @@ exports.updateUser = async (req, res, next) => {
 exports.deleteStudent = async (req, res, next) => {
     try {
         const studentid = req.params.id;
+        await assertStudentInScope(req.user, studentid);
+
         const isDeleted = await db.deleteStudentById(studentid);
         if(!isDeleted) throw httpError(400, "Delete the student's waypoint first");
 
@@ -206,6 +241,9 @@ exports.deleteUser = async (req, res, next) => {
         const targetRole = await db.getUserRole(userid);
         if(targetRole === null) throw httpError(404, "No user with this id");
 
+        //Scope before role - see updateUser for why the order is not arbitrary.
+        await assertUserInScope(req.user, userid);
+
         if(!canManageUser(req.user.role, targetRole)) {
             throw httpError(403, "Only an admin can delete an admin or sub-admin account");
         }
@@ -225,7 +263,7 @@ exports.getStudents = async (req, res, next) => {
     try{
         const { limit, cursor } = readPage(req.query);
         const search = (req.query.search ?? '').trim();
-        const schoolid = readIdFilter(req.query.schoolid, "school");
+        const schoolid = scopedSchoolFilter(req.user, readIdFilter(req.query.schoolid, "school"));
         const routeid = readIdFilter(req.query.routeid, "route");
 
         const filters = { search: search, schoolid: schoolid, routeid: routeid };
@@ -248,10 +286,17 @@ exports.getStudents = async (req, res, next) => {
 
 exports.updateStudent = async (req, res, next) => {
     try{
-        const { first_name, schoolid } = req.body;
+        const { first_name } = req.body;
         const cleanName = first_name.trim();
         const studentid = req.params.studentid;
-        if(!studentid || !cleanName || !schoolid) throw httpError(400, "Insufficient Data") 
+
+        await assertStudentInScope(req.user, studentid);
+
+        //Forced for a school account, as on the route editor: moving a child to
+        //another school is how you would push one out of your own scope, or
+        //quietly add one to somebody else's roll.
+        const schoolid = schoolScope(req.user) ?? req.body.schoolid;
+        if(!studentid || !cleanName || !schoolid) throw httpError(400, "Insufficient Data")
         await db.updateStudent(studentid, cleanName, schoolid);
 
         res.json({message: "Done!"});
@@ -264,7 +309,7 @@ exports.updateStudent = async (req, res, next) => {
 exports.searchParent = async (req, res, next) => {
     try{
         const searchedName = req.params.name;
-        const rows = await db.searchParentName(searchedName);
+        const rows = await db.searchParentName(searchedName, schoolScope(req.user));
         if(rows.length === 0) throw httpError(404, "No parent found")
 
         res.json({parents: rows});
@@ -279,6 +324,12 @@ exports.updateStudentParent = async (req, res, next) => {
         const { parentid } = req.body;
         const studentid = req.params.studentid;
         if(!parentid) throw httpError(400, "No parent provided");
+
+        //Both ends, as with driver assignment: the child must be theirs and so
+        //must the parent being attached.
+        await assertStudentInScope(req.user, studentid);
+        await assertUserInScope(req.user, parentid);
+
         await db.updateStudentParent(parentid, studentid);
 
         res.json({message: "Done!"});
@@ -490,7 +541,7 @@ exports.handleRouteJoin = async (socket, routeid, ack) => {
         const room = Number(routeid);
         if(!Number.isInteger(room)) throw httpError(400, "Invalid routeid");
 
-        const allowed = await db.canAccessRoute(socket.user.userid, socket.user.role, room);
+        const allowed = await db.canAccessRoute(socket.user.userid, socket.user.role, room, socket.user);
         if(!allowed) throw httpError(403, "Not allowed to watch this route");
 
         socket.join(`route:${room}`);
@@ -507,6 +558,8 @@ exports.getBusLocation = async (req, res, next) => {
     try {
         const routeid = Number(req.params.routeid);
         if(!Number.isInteger(routeid)) throw httpError(400, "Invalid routeid");
+        //Where somebody else's bus is sitting is not this account's business.
+        await assertRouteInScope(req.user, routeid);
 
         const rows = await db.getDriverLocation(routeid);
         //No row is a normal state: the bus has not reported on this route yet.

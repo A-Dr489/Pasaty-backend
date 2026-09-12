@@ -1,26 +1,30 @@
 const ROLE = {
     ADMIN: "admin",
     SUB_ADMIN: "sub-admin",
+    SCHOOL: "school",
     PARENT: "parent",
     DRIVER: "driver"
 }
 
 /*
-    The two roles that reach the admin portal. They see exactly the same
-    screens - every route that used to read requiredRole(ROLE.ADMIN) now reads
-    this list - and differ only in who they may create and manage.
+    The roles that reach the admin portal. They see the same screens - every
+    route that used to read requiredRole(ROLE.ADMIN) reads this list - and
+    differ in who they may create and, for ROLE.SCHOOL, in which rows they are
+    shown at all.
 
-    That difference is one rule, applied wherever a portal account could be
-    made or altered: only ROLE.ADMIN may touch a user whose role is in here.
-    A sub-admin therefore cannot mint another portal account, promote anyone
-    into one, or edit, delete or sign out an existing one, which means it can
-    never widen its own circle or lock the real admin out. Everything below
-    that line - parents, drivers, routes, schools, attendance - is open to it.
+    Membership here means one thing: only ROLE.ADMIN may create or manage a user
+    whose role is in this list. So a sub-admin cannot mint another portal
+    account, promote anyone into one, or edit, delete or sign out an existing
+    one, and neither can a school account. None of them can widen its own circle
+    or lock the real admin out.
 
-    Kept as a list rather than repeated literals so that adding a third portal
-    role later is one edit here, not thirty across the routers.
+    ROLE.SCHOOL adds a second, separate limit that this list says nothing about:
+    it only ever sees rows belonging to the one school in school_account. That
+    is resolved per request in authMiddleware and applied by schoolScope in
+    utils/functions.js - being in this list gets it to an endpoint, it does not
+    decide what the endpoint answers.
 */
-const PORTAL_ROLES = [ROLE.ADMIN, ROLE.SUB_ADMIN];
+const PORTAL_ROLES = [ROLE.ADMIN, ROLE.SUB_ADMIN, ROLE.SCHOOL];
 
 const SOCKET_EVENT = {
     JOIN: "route:join",
