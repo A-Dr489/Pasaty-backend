@@ -6,7 +6,7 @@ const { assertRouteInScope, assertStudentInScope, assertUserInScope } = require(
 const { readPage, buildPage, readIdFilter } = require("../utils/pagination.js");
 const { ROLE, ROUTE_STATUS, SOCKET_EVENT, PHASE } = require("../utils/enum.js");
 const { snapToLine } = require("../utils/geo.js");
-const { buildEstimate } = require("../utils/eta.js");
+const { buildEstimate, runGeometry } = require("../utils/eta.js");
 
 /*
     The stored sessions for one user.
@@ -409,17 +409,15 @@ const MIN_FORWARD_WINDOW_M = 200;
 /*
     Places the bus on the route line and works out who it is still coming for.
 
-    The afternoon runs the morning line backwards, so for that phase the line
-    itself is reversed before anything is measured. Every station downstream
-    then means the same thing in both phases - distance covered since this run
-    began - and nothing has to branch on direction. When a real afternoon
-    geometry replaces the mirrored one, only the line chosen here changes.
+    Which line that is - the morning's, the afternoon's own, or for a route not
+    yet regenerated the morning's read backwards - is runGeometry's decision in
+    utils/eta.js. Every station it hands back means the same thing in both
+    phases, distance covered since this run began, so nothing below branches on
+    direction.
 */
 async function estimateRoute(route, phase, location, previous, now) {
-    const coordinates = route.geo?.coordinates ?? [];
-    if(coordinates.length < 2) return null;
-
-    const line = phase === PHASE.AFTERNOON ? [...coordinates].reverse() : coordinates;
+    const { line, stationOf, plannedPace } = runGeometry(route, phase);
+    if(line.length < 2) return null;
 
     /*
         Only carry progress forward within the same phase. Starting the
@@ -451,20 +449,19 @@ async function estimateRoute(route, phase, location, previous, now) {
     const hit = snapToLine(line, [location.longitude, location.latitude], window);
     if(!hit) return null;
 
-    const stops = await db.getStopsForEta(route.id);
+    //Each stop re-expressed as a station on this run's line. One with no place
+    //on it was added since the route was last generated, and is left out.
+    const stops = (await db.getStopsForEta(route.id))
+        .map((stop) => ({ ...stop, station: stationOf(stop) }))
+        .filter((stop) => stop.station !== null);
     const startedAt = phase === PHASE.AFTERNOON ? route.afternoon_started_at : route.morning_started_at;
 
     const estimate = buildEstimate({
         routeid: route.id,
         phase: phase,
         busStation: hit.station,
-        //Stations are stored along the morning line, so the afternoon reads
-        //them from the other end.
-        stops: stops.map((stop) => ({
-            ...stop,
-            station: phase === PHASE.AFTERNOON ? hit.total - Number(stop.station) : Number(stop.station)
-        })),
-        plannedPace: route.duration > 0 ? route.distance / route.duration : null,
+        stops: stops,
+        plannedPace: plannedPace,
         elapsedSeconds: startedAt ? (now - new Date(startedAt).getTime()) / 1000 : null,
         snapOffset: hit.offset,
         now: now

@@ -246,9 +246,25 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
             await client.query(queryStudents);
         }
 
-        await client.query("UPDATE routes SET distance = NULL, duration = NULL, geo = NULL WHERE id = $1", [routeid]);
-        //The stations were measured against that geometry, so they die with it.
-        await client.query("UPDATE waypoints SET station = NULL, leg_distance = NULL, leg_duration = NULL WHERE routeid = $1", [routeid]);
+        /*
+            Both runs go together. The afternoon line visits the same stops in
+            the opposite order, so a moved or added stop makes it just as wrong
+            as the morning one - leaving it behind would have the afternoon
+            driving to where a stop used to be.
+        */
+        await client.query(`
+            UPDATE routes SET
+                distance = NULL, duration = NULL, geo = NULL,
+                afternoon_distance = NULL, afternoon_duration = NULL, afternoon_geo = NULL
+            WHERE id = $1
+        `, [routeid]);
+        //The stations were measured against those geometries, so they die with them.
+        await client.query(`
+            UPDATE waypoints SET
+                station = NULL, leg_distance = NULL, leg_duration = NULL,
+                afternoon_station = NULL, afternoon_leg_distance = NULL, afternoon_leg_duration = NULL
+            WHERE routeid = $1
+        `, [routeid]);
 
         /*
             Read back in the same shape getWaypointsByRoute sends, because the
@@ -299,7 +315,19 @@ async function getWaypointsInOrder(routeid) {
     return rows;
 }
 
-async function updateRoutes(routeid, route, waypointGeometry = []) {
+/*
+    Stores both runs of a route: the morning, start -> school, in geo/distance/
+    duration, and the afternoon, school -> start, in the afternoon_ columns.
+
+    Each run is { route: {geometry, duration, distance}, stops: [{id, station,
+    leg_distance, leg_duration}] }, with every station measured along that run's
+    own line from that run's own start.
+
+    geo keeps its unprefixed name because the driver app already reads it. The
+    afternoon is added beside it rather than the pair being renamed, so a build
+    of the app that has never heard of afternoon_geo carries on working.
+*/
+async function updateRoutes(routeid, morning, afternoon) {
     const client = await pool.connect();
     try{
         await client.query("BEGIN");
@@ -309,31 +337,55 @@ async function updateRoutes(routeid, route, waypointGeometry = []) {
                 geo = $1,
                 duration = $2,
                 distance = $3,
+                afternoon_geo = $4,
+                afternoon_duration = $5,
+                afternoon_distance = $6,
                 updatedat = CURRENT_TIMESTAMP
-                WHERE id = $4
-                RETURNING geo, duration, distance
-        `, [route.geometry, route.duration, route.distance, routeid]);
+                WHERE id = $7
+                RETURNING geo, duration, distance,
+                          afternoon_geo, afternoon_duration, afternoon_distance
+        `, [
+            morning.route.geometry, morning.route.duration, morning.route.distance,
+            afternoon.route.geometry, afternoon.route.duration, afternoon.route.distance,
+            routeid
+        ]);
 
         /*
             The stations go in the same transaction as the geometry they were
             measured against. Committing one without the other would leave the
             route pointing at a ruler that no longer matches its line.
+
+            One row per stop carrying both runs' numbers, matched up by id: the
+            two lists hold the same stops in opposite orders, so their positions
+            say nothing about which stop is which.
         */
-        if(waypointGeometry.length > 0) {
-            const stationValues = waypointGeometry.map((waypoint) => [
-                waypoint.id,
-                waypoint.station,
-                waypoint.leg_distance,
-                waypoint.leg_duration
-            ]);
+        const afternoonById = new Map(afternoon.stops.map((stop) => [stop.id, stop]));
+
+        if(morning.stops.length > 0) {
+            const stationValues = morning.stops.map((stop) => {
+                const back = afternoonById.get(stop.id);
+                return [
+                    stop.id,
+                    stop.station,
+                    stop.leg_distance,
+                    stop.leg_duration,
+                    back ? back.station : null,
+                    back ? back.leg_distance : null,
+                    back ? back.leg_duration : null
+                ];
+            });
 
             const queryStations = format(`
                 UPDATE waypoints AS w
                 SET
                     station = data.station::double precision,
                     leg_distance = data.leg_distance::double precision,
-                    leg_duration = data.leg_duration::double precision
-                FROM (VALUES %L) AS data(id, station, leg_distance, leg_duration)
+                    leg_duration = data.leg_duration::double precision,
+                    afternoon_station = data.afternoon_station::double precision,
+                    afternoon_leg_distance = data.afternoon_leg_distance::double precision,
+                    afternoon_leg_duration = data.afternoon_leg_duration::double precision
+                FROM (VALUES %L) AS data(id, station, leg_distance, leg_duration,
+                                         afternoon_station, afternoon_leg_distance, afternoon_leg_duration)
                 WHERE w.id = data.id::int;
             `, stationValues);
 
@@ -350,11 +402,18 @@ async function updateRoutes(routeid, route, waypointGeometry = []) {
     }
 }
 
+/*
+    has_distance is true only when BOTH runs are generated. A route generated
+    before the afternoon had a line of its own has a morning and no afternoon,
+    and answering "done" for it would leave it mirroring the morning forever -
+    so it is treated as ungenerated, and the next Get Route builds both.
+*/
 async function getRouteWithDistance(routeid) {
     const { rows } = await pool.query(`
-        SELECT r.*, 
-        (r.distance IS NOT NULL AND r.distance != 'NaN') AS has_distance 
-        FROM routes r 
+        SELECT r.*,
+        (r.distance IS NOT NULL AND r.distance != 'NaN'
+         AND r.afternoon_distance IS NOT NULL AND r.afternoon_distance != 'NaN') AS has_distance
+        FROM routes r
         WHERE r.id = $1
     `, [routeid]);
     return rows;
@@ -410,8 +469,15 @@ async function getDriverRoute(routeid, driverid) {
     const client = await pool.connect();
     try{
         await client.query("BEGIN");
+        /*
+            afternoon_geo is null until the route has been generated since the
+            afternoon got a line of its own. The app is expected to fall back to
+            reading geo backwards in that case, which is what it did before.
+        */
         const { rows: routeData } = await client.query(`
-            SELECT id, name, geo, distance, duration, updatedat, driverid
+            SELECT id, name, geo, distance, duration,
+                   afternoon_geo, afternoon_distance, afternoon_duration,
+                   updatedat, driverid
             FROM routes r
             WHERE id = $1
             AND driverid = $2
@@ -440,11 +506,13 @@ async function getDriverRoute(routeid, driverid) {
     }
 }
 
-//geo/distance/duration are here for the live view, which draws the line the
-//bus is being measured against. EditRoute ignores them.
+//The geometry is here for the live view, which draws the line the bus is being
+//measured against - the afternoon one during an afternoon run. EditRoute
+//ignores it.
 async function getRouteById(routeid) {
     const { rows } = await pool.query(`
         SELECT r.id, r.name, r.schoolid, r.geo, r.distance, r.duration,
+        r.afternoon_geo, r.afternoon_distance, r.afternoon_duration,
         r.morning_status, r.afternoon_status,
         s.name AS school_name
         FROM routes r

@@ -175,7 +175,53 @@ exports.saveDraft = async (req, res, next) => {
     }
 }
 
-//It will check if it needs to create a route or send the original one
+//One Mapbox driving route through the given "lng,lat;lng,lat;..." stops, in
+//the order they are listed.
+async function fetchDirections(coordinates) {
+    const response = await axios.get(`https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates}`, {
+        params: {
+            geometries: "geojson",
+            overview: "full",
+            access_token: process.env.SECRET_TOKEN,
+        }
+    });
+    return response.data;
+}
+
+//The same stops, last first. Each "lng,lat" pair is kept intact - only their
+//order is turned round.
+const reverseCoordinates = (coordinates) => coordinates.split(";").reverse().join(";");
+
+/*
+    A run as updateRoutes stores it: the line Mapbox drew and where each stop
+    sits along it. `stops` must be in the order this run visits them.
+*/
+function buildRun(directions, stops) {
+    const result = directions.routes[0];
+    return {
+        route: {
+            geometry: result.geometry,
+            duration: result.duration,
+            distance: result.distance
+        },
+        stops: buildWaypointGeometry(stops, directions)
+    };
+}
+
+/*
+    Generates both runs of a route, or sends back the stored pair.
+
+    The afternoon is asked for separately, with the stops in reverse, rather
+    than being the morning line read backwards. The way home is not the way
+    there run in reverse: one-way streets, turn restrictions and divided roads
+    mean school -> first stop is often a different road from first stop ->
+    school, and a mirrored line sends the bus the wrong way down them - with
+    every ETA a parent sees measured along a road the bus is not on.
+
+    The afternoon's coordinates are the morning's turned round, not re-read
+    from the database, so the two runs are guaranteed to describe the same
+    stops - whatever the client sent - in opposite orders.
+*/
 exports.getRoutes = async (req, res, next) => {
     try {
         const { routeid, coordinates } = req.body;
@@ -190,27 +236,22 @@ exports.getRoutes = async (req, res, next) => {
         if(routeWithDistance[0].has_distance) {
             return res.json({routes: routeWithDistance[0]});
         }
-        const response = await axios.get(`https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates}`, {
-            params: {
-                geometries: "geojson",
-                overview: "full",
-                access_token: process.env.SECRET_TOKEN,
-            }
-        });
 
-        const result = response.data.routes[0];
-        const route = {
-            geometry: result.geometry,
-            duration: result.duration,
-            distance: result.distance
-        }
+        //Two billed requests where there used to be one. They only happen here,
+        //after a route's stops change, never per run or per ping.
+        const [morningDirections, afternoonDirections] = await Promise.all([
+            fetchDirections(coordinates),
+            fetchDirections(reverseCoordinates(coordinates))
+        ]);
 
         //Read back in sort_number order, the same order the coordinates above
-        //were built in, so a leg and a stop line up by index.
+        //were built in, so a leg and a stop line up by index - and reversed for
+        //the afternoon, which is the order that run visits them in.
         const stops = await db.getWaypointsInOrder(routeid);
-        const waypointGeometry = buildWaypointGeometry(stops, response.data);
+        const morning = buildRun(morningDirections, stops);
+        const afternoon = buildRun(afternoonDirections, [...stops].reverse());
 
-        const rows = await db.updateRoutes(routeid, route, waypointGeometry);
+        const rows = await db.updateRoutes(routeid, morning, afternoon);
         if(rows.length === 0) {
             return res.status(404).json({message: "No routes found"});
         }

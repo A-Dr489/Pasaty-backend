@@ -410,6 +410,7 @@ async function getDriverLocation(routeid) {
 async function getRouteGeometry(routeid) {
     const { rows } = await pool.query(`
         SELECT id, geo, distance, duration,
+               afternoon_geo, afternoon_distance, afternoon_duration,
                morning_started_at, afternoon_started_at
         FROM routes
         WHERE id = $1
@@ -419,13 +420,16 @@ async function getRouteGeometry(routeid) {
 
 /*
     Every student stop on the route that could still be waiting, with today's
-    attendance beside it. Stops with no station are left out: the geometry has
-    not been regenerated since they were added, so there is nowhere to place
-    them on the line.
+    attendance beside it.
+
+    Both runs' stations come back, and which one applies is decided by the
+    caller, which knows the phase. A stop with no station on the run being
+    driven is dropped there rather than here: the geometry has not been
+    regenerated since it was added, so there is nowhere to place it on the line.
 */
 async function getStopsForEta(routeid) {
     const { rows } = await pool.query(`
-        SELECT w.studentid, w.station, w.sort_number,
+        SELECT w.studentid, w.station, w.afternoon_station, w.sort_number,
                a.id AS attendanceid,
                a.morning_status, a.afternoon_status
         FROM waypoints w
@@ -435,7 +439,6 @@ async function getStopsForEta(routeid) {
             AND a.attendance_date = (now() AT TIME ZONE $2)::date
         WHERE w.routeid = $1
             AND w.studentid IS NOT NULL
-            AND w.station IS NOT NULL
         ORDER BY w.sort_number
     `, [routeid, SCHOOL_TZ]);
     return rows;

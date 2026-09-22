@@ -8,6 +8,7 @@
 */
 
 const { PHASE, ATTENDANCE_STATUS } = require("./enum.js");
+const { lineLength } = require("./geo.js");
 
 //How far the bus must travel before its own pace outweighs Mapbox's plan.
 const PACE_TRUST_METERS = 300;
@@ -101,6 +102,62 @@ function paceConfidence(pace, plannedPace, snapOffset) {
     return "normal";
 }
 
+const plannedPaceOf = (distance, duration) =>
+    (distance > 0 && duration > 0 ? distance / duration : null);
+
+/*
+    The line a run is measured against, and how to read a stop's place on it.
+
+    Returns { line, stationOf, plannedPace, mirrored }. `line` is [lng, lat]
+    coordinates in the order the bus drives them; `stationOf(stop)` is how far
+    along that line a stop sits, or null if it has no place on it; `mirrored`
+    says the afternoon is being read off the morning line backwards.
+
+    The afternoon has a line of its own once the route has been generated since
+    it was introduced - Mapbox routes school -> home separately, because one-way
+    streets and turn restrictions make the way back a different road from the
+    way there. A route generated before that has only the morning line, and for
+    it the afternoon reads that line backwards: what every afternoon did before,
+    so a route nobody has regenerated is never worse off than it was.
+
+    Whichever it is, a station means the same thing downstream - distance
+    covered since this run began - so nothing after this has to branch on
+    direction.
+*/
+function runGeometry(route, phase) {
+    const morning = route.geo?.coordinates ?? [];
+    const afternoon = route.afternoon_geo?.coordinates ?? [];
+    const has = (value) => value !== null && value !== undefined;
+
+    if(phase !== PHASE.AFTERNOON) {
+        return {
+            line: morning,
+            stationOf: (stop) => (has(stop.station) ? Number(stop.station) : null),
+            plannedPace: plannedPaceOf(route.distance, route.duration),
+            mirrored: false
+        };
+    }
+
+    if(afternoon.length >= 2) {
+        return {
+            line: afternoon,
+            stationOf: (stop) => (has(stop.afternoon_station) ? Number(stop.afternoon_station) : null),
+            plannedPace: plannedPaceOf(route.afternoon_distance, route.afternoon_duration),
+            mirrored: false
+        };
+    }
+
+    //Morning stations are measured from the start of the morning line, which is
+    //the END of this one - so they are read from the other end.
+    const total = lineLength(morning);
+    return {
+        line: [...morning].reverse(),
+        stationOf: (stop) => (has(stop.station) ? total - Number(stop.station) : null),
+        plannedPace: plannedPaceOf(route.distance, route.duration),
+        mirrored: true
+    };
+}
+
 /*
     The whole payload for one ping. `stops` must already carry stations in the
     orientation of the current run, so that a bigger station always means
@@ -125,5 +182,6 @@ module.exports = {
     isAwaiting,
     stopEtas,
     paceConfidence,
+    runGeometry,
     buildEstimate
 }
