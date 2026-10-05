@@ -7,6 +7,8 @@ const { PORTAL_ROLES } = require("../utils/enum.js");
 usersRouter.get("/", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getAllUsers);
 usersRouter.get("/students/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getStudentFromParent);
 usersRouter.put("/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.updateUser);
+//Two segments, so it can never be caught by "/:id" above whatever the order.
+usersRouter.put("/:id/password", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.changeUserPassword);
 usersRouter.delete("/student/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.deleteStudent);
 usersRouter.delete("/user/:id", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.deleteUser);
 usersRouter.get("/students", authenticateUser, requiredRole(...PORTAL_ROLES), usersController.getStudents);

@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const db = require("../storage/usersQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
 const { httpError, socketOk, socketError, canGrantRole, canManageUser, schoolScope, scopedSchoolFilter } = require("../utils/functions.js");
@@ -230,6 +231,62 @@ exports.deleteStudent = async (req, res, next) => {
 //Routed through next(err) like deleteStudent above it, rather than reporting
 //every failure as a 500: the guard below answers 403 and 404, and both would
 //otherwise reach the browser as "Internal Server Error".
+/*
+    Setting a new password for someone who cannot sign in.
+
+    Guarded exactly as updateUser is, and in the same order: the target is read
+    first so a missing id is a 404, then scope, then the portal-account rule.
+    A password IS the account, so whoever may not edit a row may not reset its
+    password either - otherwise a sub-admin locked out of editing an admin
+    could simply set a new password and sign in as them.
+
+    The old password is deliberately not asked for. The person using this is an
+    admin standing in for a parent who has forgotten theirs, and does not have
+    it; their own session is the authorisation.
+
+    The length rule is register's, because these two are the only places a
+    password is set and a reset must not be allowed to be weaker than the
+    account it replaces.
+*/
+const MIN_PASSWORD = 8;
+const BCRYPT_ROUNDS = 10;
+
+exports.changeUserPassword = async (req, res, next) => {
+    const userid = Number(req.params.id);
+    try{
+        if(!Number.isInteger(userid)) throw httpError(400, "Invalid userid");
+
+        const { password, Cpassword } = req.body;
+        //typeof, not a falsy check: a JSON number or null would otherwise reach
+        //bcrypt.hash and throw there as a 500 instead of being refused here.
+        if(typeof password !== "string" || password.length < MIN_PASSWORD) {
+            throw httpError(400, `Password must be at least ${MIN_PASSWORD} characters`);
+        }
+        if(password !== Cpassword) throw httpError(400, "Passwords do not match");
+
+        const targetRole = await db.getUserRole(userid);
+        if(targetRole === null) throw httpError(404, "No user with this id");
+
+        //Scope before role - see updateUser for why the order is not arbitrary.
+        await assertUserInScope(req.user, userid);
+
+        if(!canManageUser(req.user.role, targetRole)) {
+            throw httpError(403, "Only an admin can change an admin or sub-admin password");
+        }
+
+        const hashedPassword = await bcrypt.hash(password, BCRYPT_ROUNDS);
+        const changed = await db.updateUserPassword(userid, hashedPassword);
+        //The row was there a moment ago, so this is a delete that landed in
+        //between. Still a 404: there is no longer a user with this id.
+        if(!changed) throw httpError(404, "No user with this id");
+
+        res.json({message: "Done!"});
+    } catch(err) {
+        console.log("Server Error (changeUserPassword): " + err);
+        next(err);
+    }
+}
+
 exports.deleteUser = async (req, res, next) => {
     const userid = Number(req.params.id);
     try{

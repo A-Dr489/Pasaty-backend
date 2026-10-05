@@ -555,11 +555,58 @@ async function revokeRefreshToken(tokenid, userid) {
     }
 }
 
+/*
+    Sets a new password and ends every session the account has.
+
+    The same two halves as revokeRefreshToken, for the same reasons. Deleting
+    the rows stops the refresh endpoint minting new access tokens; bumping
+    users.version invalidates the access token already in the user's hand,
+    since authenticateUser compares that version on every request and never
+    reads this table.
+
+    Both matter here more than anywhere else. A reset exists for the case where
+    someone else has the account, and without the bump their session would
+    outlive the password it was opened with - they would stay signed in for up
+    to fifteen minutes, and the stored session would keep renewing after that.
+
+    The password arrives already hashed. This file never sees a plain one.
+
+    Returns false when no row matched, so the caller can 404 rather than report
+    a success that changed nothing.
+*/
+async function updateUserPassword(userid, hashedPassword) {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const { rowCount } = await client.query(
+            "UPDATE users SET password = $1, version = version + 1 WHERE id = $2",
+            [hashedPassword, userid]
+        );
+
+        if(rowCount === 0) {
+            await client.query("ROLLBACK");
+            return false;
+        }
+
+        await client.query("DELETE FROM refreshtokens WHERE userid = $1", [userid]);
+
+        await client.query("COMMIT");
+        return true;
+    } catch(e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
+}
+
 module.exports = {
     getUsersPage,
     countUsers,
     getRefreshTokensByUser,
     revokeRefreshToken,
+    updateUserPassword,
     getStudentFromParentId,
     updateUser,
     deleteStudentById,
