@@ -67,7 +67,24 @@ async function authenticateSocket(socket, next) {
         socket.user = { ...decoded, schoolid: rows[0].schoolid };
         next();
     } catch(e) {
-        next(new Error("Invalid Token Or expired"));
+        /*
+            Carries a code for the same reason SESSION_TERMINATED does: the
+            client has to tell this apart from a server it cannot reach.
+
+            A socket is authenticated once, at the handshake, with whatever
+            access token existed when it was created - and socket.io reuses that
+            same token on every reconnect. Fifteen minutes later it is expired,
+            so a dropped connection comes back here for ever and the page goes
+            quiet with no idea why. With a code the client knows to refresh the
+            token and reconnect; without one it cannot distinguish that from the
+            API being down, where refreshing would be pointless.
+
+            An unknown code is ignored by any client that has not learnt it, so
+            this is safe for builds already in the field.
+        */
+        const err = new Error("Invalid Token Or expired");
+        err.data = { code: 'TOKEN_INVALID' };
+        next(err);
     }
 }
 

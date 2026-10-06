@@ -606,6 +606,65 @@ exports.handleRouteJoin = async (socket, routeid, ack) => {
     }
 }
 
+/*
+    The same estimate, rebuilt from the position already stored.
+
+    handleDriverLocation is the only thing that produces one, and it only runs
+    when a ping arrives. A page opened between pings therefore had nothing to
+    show and sat on "waiting for the next position report" for as long as that
+    took - which, if the driver's phone is locked or out of signal, is the whole
+    run. The bus marker was there the entire time, because that comes from the
+    stored row; only the stops and their times were missing.
+
+    The coordinates are snapped again rather than the stored station being
+    reused, and that is not belt and braces: the station stored with a position
+    was measured against whatever line the route had AT THE TIME, and a route
+    regenerated since - every one of them, when the afternoon stopped being the
+    morning line reversed - leaves that number describing a line that no longer
+    exists. Route 1's stored afternoon station was 2040 m along a 2.1 km
+    mirrored line; its real afternoon line is 1.3 km, so every stop read as
+    already passed and the board came back empty. Re-snapping makes this answer
+    the same one a ping at that spot produces, which is the point of it.
+
+    No window is given to the snap. The live path only narrows the search using
+    the PREVIOUS ping of the same run; there is no previous here, so this is the
+    first-fix case, which searches the whole line.
+
+    null when there is nothing to measure against: no stored position, or no
+    geometry to measure it against.
+*/
+async function estimateFromStoredLocation(route, location, now) {
+    if(!location) return null;
+
+    const longitude = Number(location.longitude);
+    const latitude = Number(location.latitude);
+    if(!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+
+    const phase = location.phase === PHASE.AFTERNOON ? PHASE.AFTERNOON : PHASE.MORNING;
+    const { line, stationOf, plannedPace } = runGeometry(route, phase);
+    if(line.length < 2) return null;
+
+    const hit = snapToLine(line, [longitude, latitude]);
+    if(!hit) return null;
+
+    const stops = (await db.getStopsForEta(route.id))
+        .map((stop) => ({ ...stop, station: stationOf(stop) }))
+        .filter((stop) => stop.station !== null);
+
+    const startedAt = phase === PHASE.AFTERNOON ? route.afternoon_started_at : route.morning_started_at;
+
+    return buildEstimate({
+        routeid: route.id,
+        phase: phase,
+        busStation: hit.station,
+        stops: stops,
+        plannedPace: plannedPace,
+        elapsedSeconds: startedAt ? (now - new Date(startedAt).getTime()) / 1000 : null,
+        snapOffset: hit.offset,
+        now: now
+    });
+}
+
 //Lets a map that opens mid-run show the bus at once instead of waiting
 //for the next ping.
 exports.getBusLocation = async (req, res, next) => {
@@ -617,7 +676,23 @@ exports.getBusLocation = async (req, res, next) => {
 
         const rows = await db.getDriverLocation(routeid);
         //No row is a normal state: the bus has not reported on this route yet.
-        res.json({location: rows[0] ?? null});
+        const location = rows[0] ?? null;
+
+        /*
+            The estimate travels with the position it was measured from. They
+            are one answer to one question - where is the bus, and who is it
+            still coming for - and separating them would only mean two round
+            trips to draw one page.
+
+            How old any of it is stays the client's business: it already knows
+            when the position was recorded and says so rather than hiding it.
+        */
+        const geometry = location === null ? [] : await db.getRouteGeometry(routeid);
+        const estimate = geometry.length === 0
+            ? null
+            : await estimateFromStoredLocation(geometry[0], location, Date.now());
+
+        res.json({location: location, estimate: estimate});
     } catch(err) {
         console.log("Server Error (getBusLocation): " + err);
         next(err);
