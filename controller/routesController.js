@@ -188,9 +188,39 @@ async function fetchDirections(coordinates) {
     return response.data;
 }
 
-//The same stops, last first. Each "lng,lat" pair is kept intact - only their
-//order is turned round.
-const reverseCoordinates = (coordinates) => coordinates.split(";").reverse().join(";");
+//Mapbox Directions refuses a request with more coordinates than this.
+const MAX_MAPBOX_COORDINATES = 25;
+
+/*
+    A run's items in the order the AFTERNOON visits them.
+
+    Last first - school, then the stops, then the driver's start - and with the
+    start put back on the front, because that is where the bus is when the
+    afternoon begins. The driver finishes the morning at the school, takes the
+    bus home, and in the afternoon drives BACK to the school before collecting
+    anybody. That leg is part of the run, so it belongs on the line the run is
+    measured against.
+
+    Leaving it out is what emptied the board. The start was the afternoon's
+    last station, so a driver pressing Start at home was placed at the FAR END
+    of the line - 3107 m along a 3107 m run on route 17 - and every stop read
+    as already delivered. The morning never showed it because the morning
+    starts where its line starts.
+
+    So the start appears twice, once at each end, which is what actually
+    happens: the bus leaves from there and comes back to it. Used for the
+    coordinates sent to Mapbox and for the stop list read back, so the two
+    cannot fall out of step.
+*/
+function afternoonOrder(items) {
+    const reversed = [...items].reverse();
+
+    //The extra copy costs one coordinate. A route already at the ceiling keeps
+    //the plain reversed run rather than having the whole request refused.
+    if(items.length + 1 > MAX_MAPBOX_COORDINATES) return reversed;
+
+    return [items[0], ...reversed];
+}
 
 /*
     A run as updateRoutes stores it: the line Mapbox drew and where each stop
@@ -220,7 +250,8 @@ function buildRun(directions, stops) {
 
     The afternoon's coordinates are the morning's turned round, not re-read
     from the database, so the two runs are guaranteed to describe the same
-    stops - whatever the client sent - in opposite orders.
+    stops - whatever the client sent - in opposite orders. It also starts from
+    the driver's start rather than from the school; see afternoonOrder.
 */
 exports.getRoutes = async (req, res, next) => {
     try {
@@ -241,15 +272,15 @@ exports.getRoutes = async (req, res, next) => {
         //after a route's stops change, never per run or per ping.
         const [morningDirections, afternoonDirections] = await Promise.all([
             fetchDirections(coordinates),
-            fetchDirections(reverseCoordinates(coordinates))
+            fetchDirections(afternoonOrder(coordinates.split(";")).join(";"))
         ]);
 
         //Read back in sort_number order, the same order the coordinates above
-        //were built in, so a leg and a stop line up by index - and reversed for
-        //the afternoon, which is the order that run visits them in.
+        //were built in, so a leg and a stop line up by index - and through the
+        //same afternoonOrder for the afternoon, so they line up there too.
         const stops = await db.getWaypointsInOrder(routeid);
         const morning = buildRun(morningDirections, stops);
-        const afternoon = buildRun(afternoonDirections, [...stops].reverse());
+        const afternoon = buildRun(afternoonDirections, afternoonOrder(stops));
 
         const rows = await db.updateRoutes(routeid, morning, afternoon);
         if(rows.length === 0) {

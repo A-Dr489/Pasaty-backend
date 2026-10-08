@@ -317,7 +317,8 @@ async function getWaypointsInOrder(routeid) {
 
 /*
     Stores both runs of a route: the morning, start -> school, in geo/distance/
-    duration, and the afternoon, school -> start, in the afternoon_ columns.
+    duration, and the afternoon, start -> school -> start, in the afternoon_
+    columns.
 
     Each run is { route: {geometry, duration, distance}, stops: [{id, station,
     leg_distance, leg_duration}] }, with every station measured along that run's
@@ -358,6 +359,12 @@ async function updateRoutes(routeid, morning, afternoon) {
             One row per stop carrying both runs' numbers, matched up by id: the
             two lists hold the same stops in opposite orders, so their positions
             say nothing about which stop is which.
+
+            The afternoon list carries the route's start TWICE - the run leaves
+            from there and returns to it - so the map keeps the later of the
+            two, which is its place as the destination. That is the station the
+            bus is judged against when it gets home, and the earlier copy is
+            only there to make the line begin where the bus does.
         */
         const afternoonById = new Map(afternoon.stops.map((stop) => [stop.id, stop]));
 

@@ -467,6 +467,38 @@ const MIN_FORWARD_WINDOW_M = 200;
 const OFF_LINE_M = 150;
 
 /*
+    Where a fix sits on the line, searched the way the caller's options say.
+
+    A windowed snap can only answer with a point inside its window, so a window
+    built on a station that does not belong to this line puts the bus wherever
+    the window happens to reach and keeps it there: the next ping carries that
+    same wrong station forward, and the run never recovers. Regenerating a
+    route mid-run does exactly that - every station is rewritten, and the row
+    from five seconds ago describes a line that no longer exists.
+
+    So a fix further from the window's stretch of road than any GPS error
+    explains is measured against the whole line instead, and that answer is
+    taken only when it is dramatically better. An ordinary route that doubles
+    back on itself is nowhere near this threshold and keeps its window.
+
+    Both the live path and the one that rebuilds an estimate for a page load go
+    through here, so the two cannot answer differently for the same position.
+*/
+function placeOnLine(line, point, search) {
+    let hit = snapToLine(line, point, search);
+    if(!hit) return null;
+
+    if(hit.offset > OFF_LINE_M) {
+        //Same tie-break as the caller asked for, or the rescue could land the
+        //bus at the end of a run it is only just starting.
+        const unwindowed = snapToLine(line, point, { preferEarliest: search.preferEarliest ?? 0 });
+        if(unwindowed && unwindowed.offset < hit.offset / 4) hit = unwindowed;
+    }
+
+    return hit;
+}
+
+/*
     Places the bus on the route line and works out who it is still coming for.
 
     Which line that is - the morning's, the afternoon's own, or for a route not
@@ -520,42 +552,39 @@ async function estimateRoute(route, phase, location, previous, now) {
         ? (location.recorded_at.getTime() - new Date(previous.recorded_at).getTime()) / 1000
         : null;
 
-    const window = carried === null ? {} : {
-        fromStation: carried,
-        backward: GPS_JITTER_M,
-        /*
-            Widens with the gap since the last fix. A phone that lost signal
-            for five minutes comes back far down the road, and a fixed window
-            would refuse to believe it had moved.
-        */
-        forward: Math.max(
-            MIN_FORWARD_WINDOW_M,
-            (secondsSincePrevious ?? 0) * MAX_PLAUSIBLE_SPEED_MS + MIN_FORWARD_WINDOW_M
-        )
-    };
-
-    let hit = snapToLine(line, [location.longitude, location.latitude], window);
-    if(!hit) return null;
-
     /*
-        A windowed snap can only answer with a point inside its window, so a
-        window built on a station that does not belong to this line puts the
-        bus wherever the window happens to reach and keeps it there: the next
-        ping carries that same wrong station forward, and the run never
-        recovers.
+        A run with nothing to carry has no window to search in, so the whole
+        line is measured - and then the tie is broken towards the start.
 
-        The rule above closes the way that happened. This is the guard for the
-        ways it could happen again - regenerating a route mid-run rewrites
-        every station, and the row from five seconds ago then describes a line
-        that no longer exists. A fix this far from the road is not a bus on
-        that road, so the whole line is measured instead, and only preferred
-        when it is dramatically better. An ordinary route that doubles back on
-        itself is nowhere near this threshold and keeps its window.
+        That matters for the afternoon, which leaves from the driver's own
+        start and comes back to it: that one place is both station 0 and the
+        last station on the line, and the two answers are the same distance
+        from the fix to within a metre. Landing on the far one read the run as
+        finished before it had begun - every stop behind the bus, so Stops
+        ahead stayed empty for the whole afternoon while the marker drove along
+        quite normally. Which way the coin fell depended on where in the yard
+        the bus was parked, which is why it came and went.
+
+        A tolerance rather than a flat preference for the earlier station: a
+        driver whose first fix arrives late, already a kilometre into the run,
+        is still placed where they actually are. See snapToLine.
     */
-    if(hit.offset > OFF_LINE_M) {
-        const unwindowed = snapToLine(line, [location.longitude, location.latitude]);
-        if(unwindowed && unwindowed.offset < hit.offset / 4) hit = unwindowed;
-    }
+    const hit = placeOnLine(line, [location.longitude, location.latitude], carried === null
+        ? { preferEarliest: GPS_JITTER_M }
+        : {
+            fromStation: carried,
+            backward: GPS_JITTER_M,
+            /*
+                Widens with the gap since the last fix. A phone that lost
+                signal for five minutes comes back far down the road, and a
+                fixed window would refuse to believe it had moved.
+            */
+            forward: Math.max(
+                MIN_FORWARD_WINDOW_M,
+                (secondsSincePrevious ?? 0) * MAX_PLAUSIBLE_SPEED_MS + MIN_FORWARD_WINDOW_M
+            )
+        });
+    if(!hit) return null;
 
     //Each stop re-expressed as a station on this run's line. One with no place
     //on it was added since the route was last generated, and is left out.
@@ -676,9 +705,14 @@ exports.handleRouteJoin = async (socket, routeid, ack) => {
     already passed and the board came back empty. Re-snapping makes this answer
     the same one a ping at that spot produces, which is the point of it.
 
-    No window is given to the snap. The live path only narrows the search using
-    the PREVIOUS ping of the same run; there is no previous here, so this is the
-    first-fix case, which searches the whole line.
+    The search is narrowed by the station stored with the position - the live
+    path's own answer for this very fix - so the two paths agree about a place
+    the line passes twice. The afternoon's start and its finish are the same
+    patch of road, and an unwindowed search there picks whichever is a metre
+    nearer: a page opened at the start of an afternoon would have shown an
+    empty board while the driver's own app showed five stops. A station left
+    over from a line that has since been regenerated falls outside the window
+    and is corrected, which is what the paragraph above is about.
 
     null when there is nothing to measure against: no stored position, or no
     geometry to measure it against.
@@ -694,7 +728,23 @@ async function estimateFromStoredLocation(route, location, now) {
     const { line, stationOf, plannedPace } = runGeometry(route, phase);
     if(line.length < 2) return null;
 
-    const hit = snapToLine(line, [longitude, latitude]);
+    const stored = location.station === null || location.station === undefined
+        ? null
+        : Number(location.station);
+
+    const hit = placeOnLine(line, [longitude, latitude], stored === null
+        //Recorded while the route had no geometry, so there is no progress to
+        //search from and this is the first-fix case.
+        ? { preferEarliest: GPS_JITTER_M }
+        : {
+            fromStation: stored,
+            backward: GPS_JITTER_M,
+            forward: MIN_FORWARD_WINDOW_M,
+            //Carried for the two ways this search can end up measuring the
+            //whole line anyway: a station that falls outside it entirely, and
+            //placeOnLine's off-line rescue.
+            preferEarliest: GPS_JITTER_M
+        });
     if(!hit) return null;
 
     const stops = (await db.getStopsForEta(route.id))

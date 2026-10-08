@@ -114,11 +114,15 @@ const plannedPaceOf = (distance, duration) =>
     says the afternoon is being read off the morning line backwards.
 
     The afternoon has a line of its own once the route has been generated since
-    it was introduced - Mapbox routes school -> home separately, because one-way
-    streets and turn restrictions make the way back a different road from the
-    way there. A route generated before that has only the morning line, and for
-    it the afternoon reads that line backwards: what every afternoon did before,
-    so a route nobody has regenerated is never worse off than it was.
+    it was introduced - Mapbox routes it separately, because one-way streets and
+    turn restrictions make the way back a different road from the way there, and
+    it runs start -> school -> stops -> start, since the bus has to get to the
+    school before it can collect anybody. A route generated before that has only
+    the morning line, and for it the afternoon reads that line backwards: what
+    every afternoon did before, so a route nobody has regenerated is never worse
+    off than it was. It does not get the fix either - a mirrored line still ends
+    where the bus starts - so a route whose board stays empty in the afternoon
+    needs Get Route pressing on it.
 
     Whichever it is, a station means the same thing downstream - distance
     covered since this run began - so nothing after this has to branch on
