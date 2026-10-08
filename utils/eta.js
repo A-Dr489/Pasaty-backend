@@ -114,15 +114,34 @@ const plannedPaceOf = (distance, duration) =>
     says the afternoon is being read off the morning line backwards.
 
     The afternoon has a line of its own once the route has been generated since
-    it was introduced - Mapbox routes it separately, because one-way streets and
-    turn restrictions make the way back a different road from the way there, and
-    it runs start -> school -> stops -> start, since the bus has to get to the
-    school before it can collect anybody. A route generated before that has only
-    the morning line, and for it the afternoon reads that line backwards: what
-    every afternoon did before, so a route nobody has regenerated is never worse
-    off than it was. It does not get the fix either - a mirrored line still ends
-    where the bus starts - so a route whose board stays empty in the afternoon
-    needs Get Route pressing on it.
+    it was introduced - Mapbox routes school -> home separately, because one-way
+    streets and turn restrictions make the way back a different road from the
+    way there. A route generated before that has only the morning line, and for
+    it the afternoon reads that line backwards: what every afternoon did before,
+    so a route nobody has regenerated is never worse off than it was.
+
+    THE AFTERNOON IS MEASURED FROM THE DRIVER'S DOOR, NOT FROM THE SCHOOL.
+    The stored afternoon line runs school -> home, which is the route a map
+    should draw: it is the journey the children are on. But it is not where the
+    bus starts. The driver finishes the morning at the school, takes the bus
+    home, and in the afternoon drives BACK to the school before collecting
+    anybody - and the morning line is exactly that drive, home -> school,
+    already measured and already stored.
+
+    So the two are read as one line here: the morning's roads first, then the
+    afternoon's. Nothing about either stored line changes, nothing extra is
+    asked of Mapbox, and the map still draws school -> home. Only the ruler
+    gets longer.
+
+    What that fixes: the afternoon's start was previously station 0, which made
+    the driver's own door the LAST station on the ruler. A driver pressing Start
+    at home was measured as standing at the finish - 3107 m along a 3107 m run
+    on route 17 - so every stop read as already delivered and "Stops ahead" sat
+    empty for the whole afternoon while the marker drove along quite normally.
+    The morning never showed this because the morning's ruler starts where the
+    bus does. Now so does the afternoon's: the school sits one morning-length
+    along it, and the drive out to the school counts towards the arrival times
+    instead of being ignored.
 
     Whichever it is, a station means the same thing downstream - distance
     covered since this run began - so nothing after this has to branch on
@@ -142,22 +161,43 @@ function runGeometry(route, phase) {
         };
     }
 
+    /*
+        The drive out to the school, in front of the run proper. Both legs are
+        joined end to end, and they meet AT the school - the morning finishes
+        there and the afternoon begins there - so the join is continuous and a
+        station stays a plain distance along one line.
+
+        A route with no morning line yet cannot have an approach, and then the
+        afternoon is measured from the school as it was before.
+    */
+    const approach = lineLength(morning);
+    const approachLine = approach > 0 ? morning : [];
+    //Planned for the whole thing, so the pace is not thrown by the approach
+    //being open road and the run proper being stop-start.
+    const pacedOver = (distance, duration) => plannedPaceOf(
+        Number(route.distance ?? 0) + Number(distance ?? 0),
+        Number(route.duration ?? 0) + Number(duration ?? 0)
+    );
+
     if(afternoon.length >= 2) {
         return {
-            line: afternoon,
-            stationOf: (stop) => (has(stop.afternoon_station) ? Number(stop.afternoon_station) : null),
-            plannedPace: plannedPaceOf(route.afternoon_distance, route.afternoon_duration),
+            line: [...approachLine, ...afternoon],
+            stationOf: (stop) => (has(stop.afternoon_station) ? approach + Number(stop.afternoon_station) : null),
+            plannedPace: pacedOver(route.afternoon_distance, route.afternoon_duration),
             mirrored: false
         };
     }
 
-    //Morning stations are measured from the start of the morning line, which is
-    //the END of this one - so they are read from the other end.
-    const total = lineLength(morning);
+    /*
+        No afternoon line of its own: the morning's roads, out and then back.
+        Morning stations are measured from the start of the morning line, which
+        on the way back is the END - so they are read from the other end, and
+        then pushed along by the approach like any other afternoon station.
+    */
     return {
-        line: [...morning].reverse(),
-        stationOf: (stop) => (has(stop.station) ? total - Number(stop.station) : null),
-        plannedPace: plannedPaceOf(route.distance, route.duration),
+        line: [...approachLine, ...[...morning].reverse()],
+        stationOf: (stop) => (has(stop.station) ? approach + (approach - Number(stop.station)) : null),
+        plannedPace: pacedOver(route.distance, route.duration),
         mirrored: true
     };
 }
