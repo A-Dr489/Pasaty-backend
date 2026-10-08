@@ -462,6 +462,9 @@ const GPS_JITTER_M = 40;
 //window still means something after a long silence.
 const MAX_PLAUSIBLE_SPEED_MS = 30;
 const MIN_FORWARD_WINDOW_M = 200;
+//Further off the line than any GPS error explains: the window, not the bus,
+//is in the wrong place.
+const OFF_LINE_M = 150;
 
 /*
     Places the bus on the route line and works out who it is still coming for.
@@ -476,14 +479,42 @@ async function estimateRoute(route, phase, location, previous, now) {
     const { line, stationOf, plannedPace } = runGeometry(route, phase);
     if(line.length < 2) return null;
 
+    const startedAt = phase === PHASE.AFTERNOON ? route.afternoon_started_at : route.morning_started_at;
+
     /*
-        Only carry progress forward within the same phase. Starting the
-        afternoon leaves the bus at the far end of the morning's line, and
-        treating that as its position would strand it there for the whole run.
+        Only carry progress forward within THIS RUN.
+
+        driver_location keeps one row per route and overwrites it for ever, so
+        the row waiting at the first ping of today's run is whatever the last
+        ping of some earlier run left behind. Matching on the phase alone was
+        not enough to tell those apart: 'morning' === 'morning' is as true of
+        yesterday's run as of this one.
+
+        What that cost is the whole bug. A morning starting after a day with no
+        afternoon run carried yesterday morning's final station - the END of
+        the line - and the window below then searched only the last forty
+        metres of the route. The bus sitting at the depot was placed two
+        kilometres away at the far end, every stop read as already passed, and
+        Stops ahead stayed empty for the entire run while the marker moved
+        along the map quite normally. Restarting a trip did a quieter version
+        of the same thing: the bus jumped a kilometre ahead and the stops it
+        had "passed" disappeared one by one.
+
+        It only ever bit when two runs of the same phase followed each other,
+        which is why it came and went: in a day that runs both morning and
+        afternoon the phases alternate and the old row is always the other one.
+
+        updated_at, not recorded_at: both it and started_at are written by the
+        database's own clock, so the comparison cannot be thrown by a driver's
+        phone being a few minutes out.
     */
-    const carried = previous && previous.phase === phase && previous.station !== null
-        ? Number(previous.station)
-        : null;
+    const sameRun = previous
+        && previous.phase === phase
+        && previous.station !== null
+        && startedAt
+        && new Date(previous.updated_at).getTime() >= new Date(startedAt).getTime();
+
+    const carried = sameRun ? Number(previous.station) : null;
 
     const secondsSincePrevious = previous
         ? (location.recorded_at.getTime() - new Date(previous.recorded_at).getTime()) / 1000
@@ -503,15 +534,34 @@ async function estimateRoute(route, phase, location, previous, now) {
         )
     };
 
-    const hit = snapToLine(line, [location.longitude, location.latitude], window);
+    let hit = snapToLine(line, [location.longitude, location.latitude], window);
     if(!hit) return null;
+
+    /*
+        A windowed snap can only answer with a point inside its window, so a
+        window built on a station that does not belong to this line puts the
+        bus wherever the window happens to reach and keeps it there: the next
+        ping carries that same wrong station forward, and the run never
+        recovers.
+
+        The rule above closes the way that happened. This is the guard for the
+        ways it could happen again - regenerating a route mid-run rewrites
+        every station, and the row from five seconds ago then describes a line
+        that no longer exists. A fix this far from the road is not a bus on
+        that road, so the whole line is measured instead, and only preferred
+        when it is dramatically better. An ordinary route that doubles back on
+        itself is nowhere near this threshold and keeps its window.
+    */
+    if(hit.offset > OFF_LINE_M) {
+        const unwindowed = snapToLine(line, [location.longitude, location.latitude]);
+        if(unwindowed && unwindowed.offset < hit.offset / 4) hit = unwindowed;
+    }
 
     //Each stop re-expressed as a station on this run's line. One with no place
     //on it was added since the route was last generated, and is left out.
     const stops = (await db.getStopsForEta(route.id))
         .map((stop) => ({ ...stop, station: stationOf(stop) }))
         .filter((stop) => stop.station !== null);
-    const startedAt = phase === PHASE.AFTERNOON ? route.afternoon_started_at : route.morning_started_at;
 
     const estimate = buildEstimate({
         routeid: route.id,
