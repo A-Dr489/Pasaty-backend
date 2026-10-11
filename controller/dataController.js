@@ -122,6 +122,29 @@ exports.getRouteBoard = async (req, res, next) => {
   }
 };
 
+/*
+    Today's runs for the live monitor. No phase: a row carries both, because a
+    route's morning and afternoon are two halves of one day and the page is
+    read as "where is each route up to".
+
+    The date is still a parameter rather than being fixed to today on the
+    server, so yesterday can be opened the same way and a client whose clock
+    is a few hours out does not get an empty board. It defaults to today.
+*/
+exports.getLiveBoard = async (req, res, next) => {
+  try {
+    const date = cleanDate(req.body.date ?? todayISO());
+    if (!date) throw httpError(400, 'Invalid date');
+
+    const board = await db.getLiveBoard(date, schoolScope(req.user));
+
+    res.json(board);
+  } catch (err) {
+    console.log('Server Error (getLiveBoard): ' + err);
+    next(err);
+  }
+};
+
 exports.getAttendanceTrend = async (req, res, next) => {
   try {
     const from = cleanDate(req.body.from);

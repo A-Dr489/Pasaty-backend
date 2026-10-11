@@ -108,9 +108,31 @@ async function getOverview(date, phase, scope = null) {
         WHERE $4::int IS NULL OR r.schoolid = $4
     ) r`;
 
+    /* -----------------------------------------------------------------------
+       THE RATE IS OVER SESSIONS THAT HAPPENED, NOT OVER THE REGISTER
+
+       An attendance row is written when the MORNING run starts, and its
+       afternoon_status stays null until an afternoon run starts. So a route
+       that ran only the morning leaves a register full of afternoons that
+       never happened - 9 of today's 25 rows, and 19 of 30 on 6 October.
+
+       Dividing by COUNT(*) counted every one of those as present, because
+       null is not 'ABSENT'. That is how 3 October came to report 100%
+       afternoon attendance on a day when not one child had an afternoon
+       status at all, and how 6 October read 90% while 26% were delivered.
+
+       COUNT(a.afternoon_status) counts the non-null ones, so the denominator
+       is the number of sessions that actually took place. With none, the rate
+       is NULL rather than a confident 100% - the caller shows a dash.
+
+       `total` is still sent, so the client can say "16 recorded of 25 on the
+       register" and the gap is visible instead of silently averaged away.
+    ----------------------------------------------------------------------- */
     const TALLY_SQL = `
     SELECT
         COUNT(*)::int                                                AS "total",
+        COUNT(a.morning_status)::int                                 AS "mRecorded",
+        COUNT(a.afternoon_status)::int                               AS "aRecorded",
         COUNT(*) FILTER (WHERE a.morning_status   = 'WAITING')::int     AS "mWaiting",
         COUNT(*) FILTER (WHERE a.morning_status   = 'BOARDED')::int     AS "mBoarded",
         COUNT(*) FILTER (WHERE a.morning_status   = 'ARRIVED')::int     AS "mArrived",
@@ -119,10 +141,10 @@ async function getOverview(date, phase, scope = null) {
         COUNT(*) FILTER (WHERE a.afternoon_status = 'BOARDED')::int     AS "aBoarded",
         COUNT(*) FILTER (WHERE a.afternoon_status = 'DROPPED_OFF')::int AS "aDropped",
         COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT')::int      AS "aAbsent",
-        ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.morning_status = 'ABSENT'))
-            / NULLIF(COUNT(*), 0), 1)::float8                       AS "morningRate",
-        ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT'))
-            / NULLIF(COUNT(*), 0), 1)::float8                       AS "afternoonRate"
+        ROUND(100.0 * (COUNT(a.morning_status) - COUNT(*) FILTER (WHERE a.morning_status = 'ABSENT'))
+            / NULLIF(COUNT(a.morning_status), 0), 1)::float8         AS "morningRate",
+        ROUND(100.0 * (COUNT(a.afternoon_status) - COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT'))
+            / NULLIF(COUNT(a.afternoon_status), 0), 1)::float8       AS "afternoonRate"
     FROM attendance a
     JOIN routes r ON r.id = a.routeid
     WHERE a.attendance_date = $1
@@ -193,13 +215,19 @@ async function getOverview(date, phase, scope = null) {
       phase,
       routes: fleet.rows[0],
       /* Morning can never be DROPPED_OFF and afternoon can never be ARRIVED,
-        but the client reads all five keys, so send them as zeroes. */
+        but the client reads all five keys, so send them as zeroes.
+
+        `recorded` is how many of the day's rows this phase actually has a
+        status for, and it is what the five counts add up to. `total` is the
+        whole register. Where they differ, that many children had no session
+        in this phase - see TALLY_SQL above. */
       morning: {
         WAITING: t.mWaiting,
         BOARDED: t.mBoarded,
         ARRIVED: t.mArrived,
         DROPPED_OFF: 0,
         ABSENT: t.mAbsent,
+        recorded: t.mRecorded,
         total: t.total,
       },
       afternoon: {
@@ -208,9 +236,14 @@ async function getOverview(date, phase, scope = null) {
         ARRIVED: 0,
         DROPPED_OFF: t.aDropped,
         ABSENT: t.aAbsent,
+        recorded: t.aRecorded,
         total: t.total,
       },
-      rate: { morning: t.morningRate ?? 0, afternoon: t.afternoonRate ?? 0 },
+      /* Null, not zero, when nothing was recorded. A phase that never ran has
+        no attendance rate, and 0% would read as everybody being absent while
+        the old ?? 0 made it 100% - both of them statements about a day that
+        did not happen. */
+      rate: { morning: t.morningRate, afternoon: t.afternoonRate },
       counts: {
         students: c.students,
         routes: c.routes,
@@ -304,14 +337,265 @@ async function getRouteBoard(date, phase, scope = null) {
     }));
 }
 
+/* ---------------------------------------------------------------------------
+   THE LIVE MONITOR
+
+   Today's runs, not each route's last run - which is the whole difference
+   between this and getRouteBoard above. Every status here is passed through
+   statusOn, so a run from a previous day reads as nothing at all rather than
+   as something happening now. That is what stops a trip nobody closed - there
+   are four of those in production, one open since September - from sitting in
+   this board claiming to be on the road.
+
+   Each route lands in exactly ONE state for the day, so the four counts always
+   add up to the number of rows and no route can appear under two filters:
+
+     RUNNING      either phase is in progress
+     PARTLY       exactly one phase has finished - the normal state of every
+                  route between the morning arrival and the afternoon start
+     DONE         both phases finished
+     NOT_STARTED  neither phase has a status belonging to this day
+
+   CANCELLED, which nothing emits yet, falls into NOT_STARTED. That matches
+   what the attendance layer already believes: STARTABLE treats a cancelled run
+   as one that can be started, so it is not started.
+
+   Three statements rather than one. The per-student rows are the reason: a
+   single query would repeat every route's columns once per child, and the
+   expanded rows need the children anyway. Today that is 25 rows across 7
+   routes, which is what makes it cheap enough for the page to poll.
+--------------------------------------------------------------------------- */
+async function getLiveBoard(date, scope = null) {
+    const ROUTES_SQL = `
+    WITH runs AS (
+        SELECT r.id, r.name, r.schoolid, r.driverid,
+               (r.geo IS NOT NULL) AS has_geometry,
+               ${statusOn('morning', '$1', '$2')}   AS m_status,
+               ${statusOn('afternoon', '$1', '$2')} AS a_status,
+               r.morning_started_at, r.morning_completed_at,
+               r.afternoon_started_at, r.afternoon_completed_at
+        FROM routes r
+        WHERE $3::int IS NULL OR r.schoolid = $3
+    )
+    SELECT
+        x.id, x.name, x.has_geometry AS "hasGeometry",
+        d.id AS "driverId", d.first_name AS "driverFirstName",
+        d.last_name AS "driverLastName", d.phone AS "driverPhone",
+        x.m_status AS "morningStatus",
+        x.a_status AS "afternoonStatus",
+        /*
+            The timestamps are gated on the status, not sent raw. A route out
+            on the road right now still carries the previous run's
+            completed_at, and a run with no status today carries both of
+            yesterday's - printing either would date this morning's work to
+            last week. Only the columns the status vouches for survive.
+        */
+        CASE WHEN x.m_status IS NOT NULL
+             THEN to_char(x.morning_started_at AT TIME ZONE $2, 'HH24:MI') END   AS "morningStarted",
+        CASE WHEN x.m_status = 'COMPLETED'
+             THEN to_char(x.morning_completed_at AT TIME ZONE $2, 'HH24:MI') END AS "morningCompleted",
+        CASE WHEN x.a_status IS NOT NULL
+             THEN to_char(x.afternoon_started_at AT TIME ZONE $2, 'HH24:MI') END   AS "afternoonStarted",
+        CASE WHEN x.a_status = 'COMPLETED'
+             THEN to_char(x.afternoon_completed_at AT TIME ZONE $2, 'HH24:MI') END AS "afternoonCompleted",
+        /*
+            How long the run has been open, for the phase that is open. This is
+            the column that makes an abandoned trip obvious: a run still
+            "in progress" after nine hours is not a bus on the road, and
+            nothing else on the page would say so.
+        */
+        CASE WHEN x.m_status = 'IN_PROGRESS'
+             THEN floor(extract(epoch FROM (now() - x.morning_started_at)))::int END   AS "morningElapsed",
+        CASE WHEN x.a_status = 'IN_PROGRESS'
+             THEN floor(extract(epoch FROM (now() - x.afternoon_started_at)))::int END AS "afternoonElapsed",
+        CASE
+            WHEN x.m_status = 'IN_PROGRESS' OR x.a_status = 'IN_PROGRESS' THEN 'RUNNING'
+            WHEN x.m_status = 'COMPLETED'  AND x.a_status = 'COMPLETED'   THEN 'DONE'
+            WHEN x.m_status = 'COMPLETED'   OR x.a_status = 'COMPLETED'   THEN 'PARTLY'
+            ELSE 'NOT_STARTED'
+        END AS state,
+        --Running first, because that is what the page is for.
+        CASE
+            WHEN x.m_status = 'IN_PROGRESS' OR x.a_status = 'IN_PROGRESS' THEN 0
+            WHEN x.m_status = 'COMPLETED'  AND x.a_status = 'COMPLETED'   THEN 2
+            WHEN x.m_status = 'COMPLETED'   OR x.a_status = 'COMPLETED'   THEN 1
+            ELSE 3
+        END AS sort_rank,
+        COALESCE(sc.n, 0)::int AS "studentCount"
+    FROM runs x
+    LEFT JOIN users d ON d.id = x.driverid
+    LEFT JOIN (
+        SELECT routeid, COUNT(*) AS n
+        FROM students WHERE routeid IS NOT NULL GROUP BY routeid
+    ) sc ON sc.routeid = x.id
+    ORDER BY sort_rank, x.id`;
+
+    //Counts for the collapsed row. `recorded` is how many children the phase
+    //actually has a status for, which is never assumed to be everyone on the
+    //register - a route that ran only the morning has a register full of
+    //afternoons that never happened.
+    const TALLY_SQL = `
+    SELECT a.routeid,
+        COUNT(*)::int                                                   AS "onRegister",
+        COUNT(a.morning_status)::int                                    AS "mRecorded",
+        COUNT(*) FILTER (WHERE a.morning_status   = 'WAITING')::int     AS "mWaiting",
+        COUNT(*) FILTER (WHERE a.morning_status   = 'BOARDED')::int     AS "mBoarded",
+        COUNT(*) FILTER (WHERE a.morning_status   = 'ARRIVED')::int     AS "mArrived",
+        COUNT(*) FILTER (WHERE a.morning_status   = 'ABSENT')::int      AS "mAbsent",
+        COUNT(a.afternoon_status)::int                                  AS "aRecorded",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'WAITING')::int     AS "aWaiting",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'BOARDED')::int     AS "aBoarded",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'DROPPED_OFF')::int AS "aDropped",
+        COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT')::int      AS "aAbsent"
+    FROM attendance a
+    JOIN routes r ON r.id = a.routeid
+    WHERE a.attendance_date = $1
+      AND ($2::int IS NULL OR r.schoolid = $2)
+    GROUP BY a.routeid`;
+
+    /*
+        The children behind those counts, for an expanded row.
+
+        The waypoints join is LEFT and matches on the route AS WELL AS the
+        student: a child attached to a route but given no stop of their own
+        still has to appear here, because they are on the bus and the driver
+        has them on the register. An inner join is how they became invisible
+        on the live map.
+    */
+    const STUDENTS_SQL = `
+    SELECT
+        a.routeid, a.studentid, a.id AS "attendanceId",
+        s.first_name                                AS "firstName",
+        CONCAT(p.first_name, ' ', p.last_name)      AS "parentName",
+        p.phone                                     AS "parentPhone",
+        w.sort_number                               AS "sortNumber",
+        a.morning_status                            AS "morningStatus",
+        a.afternoon_status                          AS "afternoonStatus",
+        to_char(a.morning_boarded_at      AT TIME ZONE $2, 'HH24:MI') AS "morningBoardedAt",
+        to_char(a.morning_arrived_at      AT TIME ZONE $2, 'HH24:MI') AS "morningArrivedAt",
+        to_char(a.afternoon_boarded_at    AT TIME ZONE $2, 'HH24:MI') AS "afternoonBoardedAt",
+        to_char(a.afternoon_dropped_off_at AT TIME ZONE $2, 'HH24:MI') AS "afternoonDroppedOffAt"
+    FROM attendance a
+    JOIN routes   r ON r.id = a.routeid
+    JOIN students s ON s.id = a.studentid
+    LEFT JOIN users p ON p.id = s.parentid
+    LEFT JOIN waypoints w ON w.routeid = a.routeid AND w.studentid = a.studentid
+    WHERE a.attendance_date = $1
+      AND ($3::int IS NULL OR r.schoolid = $3)
+    ORDER BY a.routeid, w.sort_number NULLS LAST, s.first_name`;
+
+    const [routes, tallies, students] = await Promise.all([
+        pool.query(ROUTES_SQL, [date, SCHOOL_TZ, scope]),
+        pool.query(TALLY_SQL, [date, scope]),
+        pool.query(STUDENTS_SQL, [date, SCHOOL_TZ, scope]),
+    ]);
+
+    const tallyOf = new Map(tallies.rows.map((row) => [row.routeid, row]));
+    const childrenOf = new Map();
+    for(const row of students.rows) {
+        if(!childrenOf.has(row.routeid)) childrenOf.set(row.routeid, []);
+        childrenOf.get(row.routeid).push({
+            studentid: row.studentid,
+            attendanceId: row.attendanceId,
+            name: row.firstName,
+            parentName: row.parentName,
+            parentPhone: row.parentPhone,
+            sortNumber: row.sortNumber,
+            morning: {
+                status: row.morningStatus,
+                boardedAt: row.morningBoardedAt,
+                arrivedAt: row.morningArrivedAt,
+            },
+            afternoon: {
+                status: row.afternoonStatus,
+                boardedAt: row.afternoonBoardedAt,
+                droppedOffAt: row.afternoonDroppedOffAt,
+            },
+        });
+    }
+
+    const counts = { RUNNING: 0, PARTLY: 0, DONE: 0, NOT_STARTED: 0 };
+
+    const rows = routes.rows.map((r) => {
+        const t = tallyOf.get(r.id);
+        counts[r.state] += 1;
+
+        return {
+            id: r.id,
+            name: r.name,
+            state: r.state,
+            hasGeometry: r.hasGeometry,
+            studentCount: r.studentCount,
+            //Null when nobody is assigned - the client says "Unassigned".
+            driver: r.driverId
+                ? {
+                    id: r.driverId,
+                    firstName: r.driverFirstName,
+                    lastName: r.driverLastName,
+                    phone: r.driverPhone,
+                }
+                : null,
+            //How many children the day's register holds for this route, which
+            //is not the same as how many are assigned to it: the register is
+            //written when a run starts, so a route that has not run has none.
+            onRegister: t ? t.onRegister : 0,
+            morning: {
+                status: r.morningStatus,
+                started: r.morningStarted,
+                completed: r.morningCompleted,
+                elapsedSeconds: r.morningElapsed,
+                tally: {
+                    recorded: t ? t.mRecorded : 0,
+                    WAITING: t ? t.mWaiting : 0,
+                    BOARDED: t ? t.mBoarded : 0,
+                    ARRIVED: t ? t.mArrived : 0,
+                    ABSENT: t ? t.mAbsent : 0,
+                },
+            },
+            afternoon: {
+                status: r.afternoonStatus,
+                started: r.afternoonStarted,
+                completed: r.afternoonCompleted,
+                elapsedSeconds: r.afternoonElapsed,
+                tally: {
+                    recorded: t ? t.aRecorded : 0,
+                    WAITING: t ? t.aWaiting : 0,
+                    BOARDED: t ? t.aBoarded : 0,
+                    DROPPED_OFF: t ? t.aDropped : 0,
+                    ABSENT: t ? t.aAbsent : 0,
+                },
+            },
+            students: childrenOf.get(r.id) ?? [],
+        };
+    });
+
+    return {
+        date,
+        //The page polls, so it has to be able to say how old what it is showing
+        //is. Taken here rather than on arrival, which would hide a slow query.
+        generatedAt: new Date().toISOString(),
+        counts: { ...counts, total: rows.length },
+        routes: rows,
+    };
+}
+
 async function getAttendanceTrend(from, to, scope = null) {
+    /* Same denominator as TALLY_SQL, for the same reason, and it matters more
+       here: every day in this series was measured against the whole register,
+       so the afternoon line sat near 100% for months while under half the
+       children were being delivered. A day with nothing recorded comes back
+       null and the chart leaves a gap in the line rather than drawing a
+       point nobody earned. */
     const TREND_SQL = `
     SELECT
     TO_CHAR(a.attendance_date, 'YYYY-MM-DD') AS "date",
-    ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.morning_status = 'ABSENT'))
-            / NULLIF(COUNT(*), 0), 1)::float8 AS "morning",
-    ROUND(100.0 * (COUNT(*) - COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT'))
-            / NULLIF(COUNT(*), 0), 1)::float8 AS "afternoon",
+    COUNT(a.morning_status)::int             AS "morningRecorded",
+    COUNT(a.afternoon_status)::int           AS "afternoonRecorded",
+    COUNT(*)::int                            AS "total",
+    ROUND(100.0 * (COUNT(a.morning_status) - COUNT(*) FILTER (WHERE a.morning_status = 'ABSENT'))
+            / NULLIF(COUNT(a.morning_status), 0), 1)::float8 AS "morning",
+    ROUND(100.0 * (COUNT(a.afternoon_status) - COUNT(*) FILTER (WHERE a.afternoon_status = 'ABSENT'))
+            / NULLIF(COUNT(a.afternoon_status), 0), 1)::float8 AS "afternoon",
     (a.attendance_date = CURRENT_DATE)        AS "provisional"
     FROM attendance a
     JOIN routes r ON r.id = a.routeid
@@ -331,5 +615,6 @@ module.exports = {
     updateSchool,
     getOverview,
     getRouteBoard,
+    getLiveBoard,
     getAttendanceTrend
 }
