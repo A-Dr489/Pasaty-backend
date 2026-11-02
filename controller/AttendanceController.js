@@ -2,7 +2,8 @@ const db = require("../storage/AttendanceQuery.js");
 const { getIO } = require("../sockets/socketHandler.js");
 const { httpError, assertInScope } = require("../utils/functions.js");
 const { assertRouteInScope, assertStudentInScope, assertAttendanceInScope } = require("../storage/scopeQuery.js");
-const { SOCKET_EVENT, ATTENDANCE_STATUS } = require("../utils/enum.js");
+const { SOCKET_EVENT, ATTENDANCE_STATUS, PHASE, ROUTE_STATUS } = require("../utils/enum.js");
+const { emitRunToFamilies } = require("../sockets/familyFeed.js");
 const {
   readDatePage,
   readDateIdPage,
@@ -91,11 +92,19 @@ exports.startMorning = async (req, res, next) => {
         const driverid = req.user.userid;
         const { route, students } = await db.startMorningRoute(routeid, driverid);
 
-        // Broadcast to the route room ONLY (drivers/parents/admin watching route N).
+        /*
+            Broadcast to the route room ONLY - the driver and the portal. Not
+            parents: this payload is the whole roster, every row carrying a
+            child's name and their parent's, which is why families have rooms
+            of their own (sockets/familyFeed.js).
+        */
         getIO().to(`route:${routeid}`).emit(SOCKET_EVENT.ATTENDANCE_MORNING_START, {
             routeid: routeid,
             students,
         });
+
+        //Three fields, so a parent's map can open itself.
+        emitRunToFamilies(getIO(), routeid, PHASE.MORNING, ROUTE_STATUS.IN_PROGRESS, route.morning_started_at);
 
         notifyRoute(routeid, {
             kind: "run_started_morning",
@@ -197,6 +206,9 @@ exports.completeMorning = async (req, res, next) => {
       students: result.students, // final ARRIVED/ABSENT states for live update
     });
 
+    //And the families, without the roster: the run is over, close the map.
+    emitRunToFamilies(getIO(), routeid, PHASE.MORNING, ROUTE_STATUS.COMPLETED, result.completed_at);
+
     /*
         Completing the morning is where two things are decided for every child
         at once - who arrived, and who never showed up - so both notifications
@@ -256,6 +268,8 @@ exports.startAfternoon = async (req, res, next) => {
       phase: 'afternoon',
       students,
     });
+
+    emitRunToFamilies(getIO(), routeid, PHASE.AFTERNOON, ROUTE_STATUS.IN_PROGRESS, route.afternoon_started_at);
 
     notifyRoute(routeid, {
       kind: "run_started_afternoon",
@@ -374,6 +388,8 @@ exports.completeAfternoon = async (req, res, next) => {
       summary: result.summary,
       students: result.students,
     });
+
+    emitRunToFamilies(getIO(), routeid, PHASE.AFTERNOON, ROUTE_STATUS.COMPLETED, result.completed_at);
 
     /*
         The afternoon ends with one notification per parent, never two.

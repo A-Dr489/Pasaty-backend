@@ -2,6 +2,7 @@ const { Router } = require("express");
 const protectedRouter = Router();
 const protectedController = require('../controller/protectedController.js');
 const absenceController = require('../controller/absenceController.js');
+const busController = require('../controller/busController.js');
 const { authenticateUser, requiredRole } = require("../utils/authMiddleware.js");
 const { ROLE } = require("../utils/enum.js");
 
@@ -10,6 +11,13 @@ protectedRouter.get("/myroutes", authenticateUser, requiredRole(ROLE.DRIVER), pr
 
 protectedRouter.get("/students", authenticateUser, requiredRole(ROLE.PARENT), protectedController.getStudents);
 protectedRouter.get("/attendance/:studentid", authenticateUser, requiredRole(ROLE.PARENT), protectedController.getStudentAttendance);
+
+/*
+    The live map's opening snapshot - the line, the stops, the bus and this
+    child's countdown in one answer. The socket keeps the moving parts current
+    afterwards; see sockets/familyFeed.js.
+*/
+protectedRouter.get("/bus/:studentid", authenticateUser, requiredRole(ROLE.PARENT), busController.getChildBus);
 
 /*
     Planned absence - a parent taking their child off a morning run, either

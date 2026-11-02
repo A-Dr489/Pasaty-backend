@@ -38,7 +38,19 @@ const SOCKET_EVENT = {
     DRIVER_LOCATION: "driver:location",   //driver -> server
     BUS_LOCATION: "bus:location",         //server -> route room
     ETA_UPDATED: "eta:updated",           //server -> route room
-    ROOM_ERROR: "route:error"             //server -> the socket that asked
+    ROOM_ERROR: "route:error",            //server -> the socket that asked
+
+    /*
+        The parent side, which is a different audience and so a different set
+        of rooms. The route room carries every child's name, every child's
+        arrival time and the driver's speed; a family gets the bus and their
+        own child, and nothing else. See sockets/familyFeed.js.
+    */
+    FAMILY_JOIN: "family:join",           //parent -> server
+    FAMILY_LEAVE: "family:leave",         //parent -> server
+    FAMILY_BUS: "family:bus",             //server -> family room
+    FAMILY_ETA: "family:eta",             //server -> one family
+    FAMILY_RUN: "family:run"              //server -> family room
 }
 
 const PHASE = {

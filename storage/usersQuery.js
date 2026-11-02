@@ -426,17 +426,26 @@ async function getRouteGeometry(routeid) {
     caller, which knows the phase. A stop with no station on the run being
     driven is dropped there rather than here: the geometry has not been
     regenerated since it was added, so there is nowhere to place it on the line.
+
+    parentid rides along so a ping can tell one family what the bus is doing
+    without telling them about anyone else's child - see sockets/familyFeed.js.
+    A LEFT JOIN, because a student with no parent on record still has a stop the
+    bus has to drive to, and an inner join would quietly drop it from the
+    estimate the driver sees.
 */
 async function getStopsForEta(routeid) {
     const { rows } = await pool.query(`
         SELECT w.studentid, w.station, w.afternoon_station, w.sort_number,
                a.id AS attendanceid,
-               a.morning_status, a.afternoon_status
+               a.morning_status, a.afternoon_status,
+               s.parentid
         FROM waypoints w
         LEFT JOIN attendance a
             ON a.studentid = w.studentid
             AND a.routeid = w.routeid
             AND a.attendance_date = (now() AT TIME ZONE $2)::date
+        LEFT JOIN students s
+            ON s.id = w.studentid
         WHERE w.routeid = $1
             AND w.studentid IS NOT NULL
         ORDER BY w.sort_number
@@ -446,9 +455,8 @@ async function getStopsForEta(routeid) {
 
 /*
     Who may watch a route room: an admin or sub-admin sees every route, a school
-    account only its own school's, a driver only the routes assigned to them, a
-    parent only a route one of their students rides. Any other role gets
-    nothing.
+    account only its own school's, a driver only the routes assigned to them.
+    Any other role gets nothing.
 
     The school account is checked here rather than being waved through with the
     other portal roles because the live map is the one place scoping could be
@@ -456,6 +464,13 @@ async function getStopsForEta(routeid) {
     join would still stream another school's bus position and its register.
 
     `user` rather than a bare role, because this one needs the school too.
+
+    A PARENT IS NOT ON THIS LIST, and used to be. The route room carries every
+    child's first_name and their parent_name on every attendance broadcast,
+    every child's arrival time on every ping, and the driver's speed - so
+    letting one family in handed them the whole route's business. Parents watch
+    through canWatchAsFamily below and the rooms in sockets/familyFeed.js, which
+    carry the bus and their own child and nothing else.
 */
 async function canAccessRoute(userid, role, routeid, user = null) {
     if(role === ROLE.SCHOOL) {
@@ -479,15 +494,26 @@ async function canAccessRoute(userid, role, routeid, user = null) {
         return rowCount > 0;
     }
 
-    if(role === ROLE.PARENT) {
-        const { rowCount } = await pool.query(
-            "SELECT 1 FROM students WHERE routeid = $1 AND parentid = $2 LIMIT 1",
-            [routeid, userid]
-        );
-        return rowCount > 0;
-    }
-
     return false;
+}
+
+/*
+    Whether this parent has a child on this route - the gate on the family
+    rooms, and the same question canAccessRoute used to answer for them.
+
+    Only a parent reaches it: a driver wanting to watch their own bus, or an
+    admin wanting to watch anybody's, belongs in the route room where the
+    rosters and the diagnostics are. Anyone else asking for a family feed is
+    refused rather than quietly upgraded.
+*/
+async function canWatchAsFamily(userid, role, routeid) {
+    if(role !== ROLE.PARENT) return false;
+
+    const { rowCount } = await pool.query(
+        "SELECT 1 FROM students WHERE routeid = $1 AND parentid = $2 LIMIT 1",
+        [routeid, userid]
+    );
+    return rowCount > 0;
 }
 
 //Every stored session for one user, newest first.
@@ -622,5 +648,6 @@ module.exports = {
     getDriverLocation,
     getRouteGeometry,
     getStopsForEta,
-    canAccessRoute
+    canAccessRoute,
+    canWatchAsFamily
 }

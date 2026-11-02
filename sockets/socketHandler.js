@@ -30,6 +30,19 @@ function socketHandler (server) {
       socket.on(SOCKET_EVENT.LEAVE, (routeid) => {
         socket.leave(`route:${routeid}`);
       });
+      /*
+          The parent side of the same idea, and a separate pair of events
+          rather than a role check inside the two above: the rooms they join
+          are different rooms carrying different payloads, and a parent who
+          sent route:join by mistake should be refused rather than quietly
+          given something else.
+      */
+      socket.on(SOCKET_EVENT.FAMILY_JOIN, (routeid, ack) => {
+        controller().handleFamilyJoin(socket, routeid, ack);
+      });
+      socket.on(SOCKET_EVENT.FAMILY_LEAVE, (routeid) => {
+        controller().handleFamilyLeave(socket, routeid);
+      });
       //Driver -> server. The server re-broadcasts as BUS_LOCATION.
       socket.on(SOCKET_EVENT.DRIVER_LOCATION, (payload, ack) => {
         controller().handleDriverLocation(socket, payload, ack);

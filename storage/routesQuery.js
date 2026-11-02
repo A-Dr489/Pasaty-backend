@@ -194,6 +194,23 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
             }
         }
 
+        /*
+            afternoon_sort_number is nullable and a missing one is written as
+            null rather than defaulted to a position: null means "this route has
+            no afternoon order", and afternoonOrder reads a route with any null
+            as one that drives the morning backwards. Inventing a number here
+            would claim an order nobody chose - and a wrong afternoon order is a
+            bus driving to the wrong house, not a cosmetic slip.
+
+            The editor sends a complete set whenever it touches the afternoon
+            order, so the only rows that land null are ones saved by a portal
+            build older than the column.
+        */
+        const afternoonSort = (waypoint) => {
+            const value = waypoint.afternoon_sort_number;
+            return value === null || value === undefined || value === "" ? null : value;
+        };
+
         if(inserts.length > 0) {
             const insertValues = inserts.map((insert) => [
               routeid,
@@ -203,32 +220,35 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
               insert.sort_number,
               insert.type,
               insert.studentid === "" || insert.type !== "student"? null : insert.studentid,
+              afternoonSort(insert),
             ]);
-            const queryInsert = format(`INSERT INTO waypoints (routeid, name, longitude, latitude, sort_number, type, studentid) VALUES %L`, insertValues);
+            const queryInsert = format(`INSERT INTO waypoints (routeid, name, longitude, latitude, sort_number, type, studentid, afternoon_sort_number) VALUES %L`, insertValues);
             await client.query(queryInsert);
         }
 
         if(updates.length > 0) {
             const updateValues = updates.map((update) => [
                 update.id,
-                update.name ? update.name : update.type + "_" + update.sort_number, 
-                update.longitude, 
-                update.latitude, 
-                update.sort_number, 
-                update.type, 
-                update.studentid === "" || update.type !== "student" ? null : update.studentid
+                update.name ? update.name : update.type + "_" + update.sort_number,
+                update.longitude,
+                update.latitude,
+                update.sort_number,
+                update.type,
+                update.studentid === "" || update.type !== "student" ? null : update.studentid,
+                afternoonSort(update)
             ]);
-            
+
             const queryUpdate = format(`
                 UPDATE waypoints AS w
-                SET 
+                SET
                     name = data.name,
                     longitude = data.longitude::numeric,
                     latitude = data.latitude::numeric,
                     sort_number = data.sort_number::int,
                     type = data.type,
-                    studentid = data.studentid::int
-                FROM (VALUES %L) AS data(id, name, longitude, latitude, sort_number, type, studentid)
+                    studentid = data.studentid::int,
+                    afternoon_sort_number = data.afternoon_sort_number::int
+                FROM (VALUES %L) AS data(id, name, longitude, latitude, sort_number, type, studentid, afternoon_sort_number)
                 WHERE w.id = data.id::int;
             `, updateValues);
 
@@ -248,9 +268,13 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
 
         /*
             Both runs go together. The afternoon line visits the same stops in
-            the opposite order, so a moved or added stop makes it just as wrong
+            an order of its own, so a moved or added stop makes it just as wrong
             as the morning one - leaving it behind would have the afternoon
             driving to where a stop used to be.
+
+            A reordered afternoon alone is enough to need this: the stops have
+            not moved, but the line through them has, and so has every station
+            measured along it.
         */
         await client.query(`
             UPDATE routes SET
@@ -303,11 +327,18 @@ async function saveDraftChanges(routeid, inserts, updates, deletes) {
     }
 }
 
-//The stops in the order the bus drives them, which is the order their
-//coordinates are sent to Mapbox.
+/*
+    The stops in the order the bus drives them in the MORNING, which is the
+    order their coordinates are sent to Mapbox.
+
+    type and afternoon_sort_number ride along because the afternoon is driven in
+    an order of its own, worked out from them by afternoonOrder in
+    utils/stopOrder.js. They are read here rather than in a second query so both
+    runs are built from one snapshot of the stops.
+*/
 async function getWaypointsInOrder(routeid) {
     const { rows } = await pool.query(`
-        SELECT id, longitude, latitude, sort_number
+        SELECT id, longitude, latitude, sort_number, type, afternoon_sort_number
         FROM waypoints
         WHERE routeid = $1
         ORDER BY sort_number

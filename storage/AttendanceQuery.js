@@ -477,6 +477,44 @@ async function completeMorningRoute(routeid, driverid) {
   });
 }
 
+/* ---------------------------------------------------------------------------
+   THE AFTERNOON ROSTER, IN THE ORDER IT IS DRIVEN
+
+   The three afternoon rosters below - resuming a run, starting one, finishing
+   one - all answer the same question for the driver's phone: who is on the bus
+   this afternoon. They used to come back in student id order, which is the
+   order the rows were created in and means nothing on the road: the driver read
+   a list whose first name might be the last house.
+
+   So they are ordered by the stop instead, drop-off first, using the afternoon
+   order described in utils/stopOrder.js. The fallback is the same one that file
+   applies - the morning order reversed - which is why sort_number DESC sits
+   behind the afternoon number rather than ASC.
+
+   LEFT JOIN, not JOIN: an attendance row can outlive the waypoint it was made
+   for, and a child whose stop has been deleted still has a status that has to
+   be shown. They sort last, by id, rather than disappearing off the list.
+
+   NULLS LAST on BOTH keys, and the second one is not decoration. DESC in
+   postgres implies NULLS FIRST, so a child with no waypoint - whose sort_number
+   is therefore null - came out at the TOP of the driver's list on any route
+   using the reverse-morning fallback, which is every route that has not been
+   given an afternoon order yet. The first name the driver read would have been
+   the one child whose stop no longer exists.
+
+   Joined on routeid AS WELL AS studentid. Joining on the student alone - as the
+   morning rosters above still do - multiplies the row out once per route that
+   child has a stop on, and another route's stop order could then decide this
+   one's.
+--------------------------------------------------------------------------- */
+const AFTERNOON_STOP_JOIN = `
+         LEFT JOIN waypoints w
+                ON w.routeid = a.routeid
+               AND w.studentid = a.studentid`;
+
+const AFTERNOON_STOP_ORDER = `
+        ORDER BY w.afternoon_sort_number NULLS LAST, w.sort_number DESC NULLS LAST, s.id`;
+
 async function startAfternoonRoute(routeid, driverid) {
   return withTransaction(async (client) => {
     const { rows: routeRows } = await client.query(
@@ -508,9 +546,10 @@ async function startAfternoonRoute(routeid, driverid) {
               FROM attendance a
               JOIN students s ON s.id = a.studentid
               JOIN users p ON p.id = s.parentid
+              ${AFTERNOON_STOP_JOIN}
               WHERE a.routeid = $1
                 AND a.attendance_date = ${today}
-              ORDER BY s.id`,
+              ${AFTERNOON_STOP_ORDER}`,
             [routeid, SCHOOL_TZ]
           );
           return {
@@ -554,9 +593,10 @@ async function startAfternoonRoute(routeid, driverid) {
          FROM attendance a
          JOIN students s ON s.id = a.studentid
          JOIN users p ON p.id = s.parentid
+         ${AFTERNOON_STOP_JOIN}
         WHERE a.routeid = $1
           AND a.attendance_date = ${today}
-        ORDER BY s.id`,
+        ${AFTERNOON_STOP_ORDER}`,
       [routeid, SCHOOL_TZ]
     );
 
@@ -722,9 +762,10 @@ async function completeAfternoonRoute(routeid, driverid) {
          FROM attendance a
          JOIN students s ON s.id = a.studentid
          JOIN users p ON p.id = s.parentid
+         ${AFTERNOON_STOP_JOIN}
         WHERE a.routeid = $1
           AND a.attendance_date = ${today}
-        ORDER BY s.id`,
+        ${AFTERNOON_STOP_ORDER}`,
       [routeid, SCHOOL_TZ]
     );
 

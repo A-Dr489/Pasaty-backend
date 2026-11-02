@@ -4,6 +4,7 @@ const { httpError, schoolScope, scopedSchoolFilter } = require("../utils/functio
 const { assertRouteInScope, assertUserInScope } = require("../storage/scopeQuery.js");
 const { readPage, buildPage, readIdFilter } = require("../utils/pagination.js");
 const { snapToLine } = require("../utils/geo.js");
+const { afternoonRunOf } = require("../utils/stopOrder.js");
 
 /*
     Works out where every stop sits on the line Mapbox just returned.
@@ -188,10 +189,6 @@ async function fetchDirections(coordinates) {
     return response.data;
 }
 
-//The same stops, last first. Each "lng,lat" pair is kept intact - only their
-//order is turned round.
-const reverseCoordinates = (coordinates) => coordinates.split(";").reverse().join(";");
-
 /*
     A run as updateRoutes stores it: the line Mapbox drew and where each stop
     sits along it. `stops` must be in the order this run visits them.
@@ -211,20 +208,23 @@ function buildRun(directions, stops) {
 /*
     Generates both runs of a route, or sends back the stored pair.
 
-    The afternoon is asked for separately, with the stops in reverse, rather
-    than being the morning line read backwards. The way home is not the way
-    there run in reverse: one-way streets, turn restrictions and divided roads
-    mean school -> first stop is often a different road from first stop ->
-    school, and a mirrored line sends the bus the wrong way down them - with
-    every ETA a parent sees measured along a road the bus is not on.
+    The afternoon is asked for separately, with its own stop order, rather than
+    being the morning line read backwards. Two reasons, and either on its own
+    would be enough:
 
-    The afternoon's coordinates are the morning's turned round, not re-read
-    from the database, so the two runs are guaranteed to describe the same
-    stops - whatever the client sent - in opposite orders.
+    The way home is not the way there run in reverse. One-way streets, turn
+    restrictions and divided roads mean school -> first stop is often a
+    different road from first stop -> school, and a mirrored line sends the bus
+    the wrong way down them - with every ETA a parent sees measured along a road
+    the bus is not on.
+
+    And the order itself differs. Drop-off is not pickup backwards: see
+    utils/stopOrder.js for what afternoon_sort_number is and why the ends of
+    that order are pinned.
 */
 exports.getRoutes = async (req, res, next) => {
     try {
-        const { routeid, coordinates } = req.body;
+        const { routeid, coordinates, afternoon_coordinates } = req.body;
         if(!routeid || !coordinates) {
            return res.status(400).json({message: "Insuffecient Data"});
         }
@@ -237,19 +237,26 @@ exports.getRoutes = async (req, res, next) => {
             return res.json({routes: routeWithDistance[0]});
         }
 
+        /*
+            Read in sort_number order, the same order the coordinates in the
+            body were built in, so a leg and a stop line up by index.
+
+            Read BEFORE the Mapbox calls now, because the afternoon's order
+            comes out of these rows - one query against the local database
+            ahead of two billed requests over the network.
+        */
+        const stops = await db.getWaypointsInOrder(routeid);
+        const afternoonRun = afternoonRunOf(stops, coordinates, afternoon_coordinates);
+
         //Two billed requests where there used to be one. They only happen here,
         //after a route's stops change, never per run or per ping.
         const [morningDirections, afternoonDirections] = await Promise.all([
             fetchDirections(coordinates),
-            fetchDirections(reverseCoordinates(coordinates))
+            fetchDirections(afternoonRun.coordinates)
         ]);
 
-        //Read back in sort_number order, the same order the coordinates above
-        //were built in, so a leg and a stop line up by index - and reversed for
-        //the afternoon, which is the order that run visits them in.
-        const stops = await db.getWaypointsInOrder(routeid);
         const morning = buildRun(morningDirections, stops);
-        const afternoon = buildRun(afternoonDirections, [...stops].reverse());
+        const afternoon = buildRun(afternoonDirections, afternoonRun.stops);
 
         const rows = await db.updateRoutes(routeid, morning, afternoon);
         if(rows.length === 0) {
