@@ -11,14 +11,26 @@
 
     WHAT A PARENT IS AND IS NOT TOLD
     --------------------------------
-    Told: the drawn line, every stop's coordinates, the bus position and the
-    time it was taken, and their own child's countdown.
+    Told: where the bus is and when that position was taken, where the school
+    is, where their own child waits, and their own child's countdown.
 
     Not told: anybody's name, any other child's studentid or arrival time, the
-    driver's identity, speed, heading or accuracy, and the internal station and
-    snap offset. Every payload here is built by listing the fields that go in,
-    never by removing fields from a database row - a row gains columns, and a
-    blocklist forwards the next one silently.
+    driver's identity, speed, heading or accuracy, the internal station and snap
+    offset - and no route line and no list of stops.
+
+    THE LINE AND THE STOP LIST WERE TAKEN OUT ON PURPOSE. DO NOT PUT THEM BACK.
+    The first version of this endpoint sent route.geo and every stop on the
+    route as bare coordinates in driving order. No names, which is why it looked
+    like enough. It is not: that list is where every family on the bus lives,
+    and the line runs past each of their doors. The app drew two pins out of all
+    of it, so the rest went to every phone for nothing - and anyone reading the
+    app's network traffic got the lot. The mobile side asked for this cut and
+    they were right to. If some future screen genuinely needs the shape of the
+    route, send the line; do not bring back the stops.
+
+    Every payload here is built by listing the fields that go in, never by
+    removing fields from a database row - a row gains columns, and a blocklist
+    forwards the next one silently.
 */
 
 const db = require("../storage/busQuery.js");
@@ -26,7 +38,6 @@ const users = require("../storage/usersQuery.js");
 const { httpError } = require("../utils/functions.js");
 const { PHASE, ROUTE_STATUS } = require("../utils/enum.js");
 const { estimateFromStoredLocation } = require("../utils/busProgress.js");
-const { afternoonOrder } = require("../utils/stopOrder.js");
 
 /*
     Which run is being driven right now, or null.
@@ -48,40 +59,20 @@ function runInProgress(route) {
 }
 
 /*
-    The line to DRAW, which is not the line the bus is measured against.
+    A map pin: two numbers, and nothing that says whose it is.
 
-    runGeometry builds an afternoon ruler by joining the morning line to the
-    afternoon one, because the driver starts the afternoon at home and drives
-    to the school before collecting anybody. That is the right ruler and the
-    wrong picture: the journey the children are on is the afternoon line alone,
-    school to door. So this picks the stored line for the phase and nothing is
-    concatenated.
+    Both pins go through here rather than being spread inline, so there is one
+    place that decides what a pin consists of. getMapPins hands back `is_school`
+    and `is_mine` instead of `type` and `studentid` precisely so that this
+    function has nothing else it could pass on.
+
+    A missing pin is null, not an omitted key: the app checks the field, and a
+    route with no school waypoint is ordinary data, not a fault.
 */
-function lineFor(route, phase) {
-    if(phase === PHASE.AFTERNOON && route.afternoon_geo?.coordinates?.length) {
-        return route.afternoon_geo;
-    }
-    return route.geo ?? null;
-}
-
-/*
-    The stops, in the order the run visits them, as coordinates and a flag.
-
-    studentid decides `mine` and is then dropped: a parent gets the shape of
-    the route and their own place in it, and no way to tell which pin belongs
-    to which family.
-*/
-function stopsFor(rows, phase, studentid) {
-    const ordered = phase === PHASE.AFTERNOON
-        ? afternoonOrder(rows)
-        : [...rows].sort((a, b) => Number(a.sort_number) - Number(b.sort_number));
-
-    return ordered.map((stop) => ({
-        longitude: stop.longitude,
-        latitude: stop.latitude,
-        mine: stop.studentid !== null && Number(stop.studentid) === Number(studentid)
-    }));
-}
+const pinFor = (waypoint) => (waypoint == null ? null : {
+    latitude: waypoint.latitude,
+    longitude: waypoint.longitude
+});
 
 //The bus, listed field by field - see the note at the top of this file.
 const busFor = (location) => (location === null ? null : {
@@ -139,12 +130,15 @@ exports.getChildBus = async (req, res, next) => {
         if(rows.length === 0) throw httpError(404, "No route found for this student");
 
         const route = rows[0];
-        const run = runInProgress(route);
         //Outside a run there is nothing live to report. The driver is off the
-        //clock and the server does not even store where they are.
-        const phase = run ? run.phase : PHASE.MORNING;
+        //clock and the server does not even store where they are - so `run`,
+        //`bus` and `mine` all come back null, while the two pins are sent
+        //either way. They do not depend on a run, and they cost one small read.
+        const run = runInProgress(route);
 
-        const stopRows = await db.getStopsForMap(route.id);
+        const pins = await db.getMapPins(route.id, studentid);
+        const school = pins.find((pin) => pin.is_school === true) ?? null;
+        const home = pins.find((pin) => pin.is_mine === true) ?? null;
 
         const location = run === null ? null : ((await users.getDriverLocation(route.id))[0] ?? null);
         const estimate = location === null
@@ -155,17 +149,23 @@ exports.getChildBus = async (req, res, next) => {
                 Date.now()
             );
 
+        /*
+            `route.updatedat` is gone along with the line. It was there so a
+            client could tell whether the geometry it had cached was still the
+            current one; with no geometry in the response there is nothing left
+            for it to date. `name` stays - the app parses it, and it says
+            nothing about any family.
+        */
         res.json({
             run: run,
             route: {
                 id: route.id,
-                name: route.name,
-                updatedat: route.updatedat,
-                geo: lineFor(route, phase)
+                name: route.name
             },
-            stops: stopsFor(stopRows, phase, studentid),
             bus: busFor(location),
-            mine: run === null ? null : mineFor(estimate, route, phase, studentid)
+            school: pinFor(school),
+            home: pinFor(home),
+            mine: run === null ? null : mineFor(estimate, route, run.phase, studentid)
         });
     } catch(err) {
         console.log("Server Error (getChildBus): " + err);

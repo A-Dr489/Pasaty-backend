@@ -24,10 +24,19 @@ const SCHOOL_TZ = process.env.SCHOOL_TZ;
     Everything runGeometry needs is here (geo, afternoon_geo, the distances and
     durations, and the two started_at columns), so the estimate can be rebuilt
     from one read.
+
+    THE TWO GEO COLUMNS ARE STILL NEEDED EVEN THOUGH THEY ARE NO LONGER SENT.
+    The response stopped carrying the route line - see the note at the top of
+    busController.js - but the line is still what the bus is measured against:
+    runGeometry snaps the stored position onto it to work out how far the bus
+    is from each waiting child. Dropping `geo` here because "the line is gone
+    from the payload" would leave every parent with a position and no countdown,
+    and nothing would error. `updatedat` is gone because it dated the line for
+    caching, and there is no longer a line to date.
 */
 async function getChildRoute(studentid, parentid) {
     const { rows } = await pool.query(`
-        SELECT r.id, r.name, r.updatedat,
+        SELECT r.id, r.name,
                r.geo, r.distance, r.duration,
                r.afternoon_geo, r.afternoon_distance, r.afternoon_duration,
                r.morning_status, r.afternoon_status,
@@ -52,26 +61,52 @@ async function getChildRoute(studentid, parentid) {
 }
 
 /*
-    Every stop on the route, as a parent may see it: where it is, and whether
-    it is theirs.
+    The two pins a parent's map draws: the school, and this child's own door.
 
-    studentid comes back so the controller can mark the parent's own stop and
-    then drop it. Nothing else about the child is read - no name, no attendance
-    - because nothing else can be shown. type and both sort numbers are here so
-    the caller can put them in the order the run being driven visits them.
+    THIS USED TO RETURN EVERY STOP ON THE ROUTE, and that is worth recording as
+    a mistake rather than quietly deleting. The coordinates were sent without
+    names, which is what made it look acceptable - but a list of every stop on a
+    route, in driving order, IS the home address of every family on that bus,
+    and the app it was sent to only ever drew two of them. Leaving a field out
+    of the display protects nobody. Leaving it out of the response does.
+
+    So: at most two rows, and a parent is entitled to both. The school is shared
+    by everyone on the route, and the other belongs to the child whose id the
+    caller already had to know - and own, see getChildRoute - to get this far.
+
+    THE FLAGS ARE COMPUTED HERE so that the controller never holds `type` or
+    `studentid` for these rows and therefore cannot forward either by accident.
+    It is the same trick as morning_is_today above: let SQL answer the question
+    instead of handing out the raw column and asking everyone to be careful.
+    `type = 'school'` is a literal because waypoints.type has no enum on the
+    server - see the note at the top of utils/stopOrder.js, which spells out the
+    same two type names for the same reason.
+
+    Either row can be missing, and neither absence is an error:
+      * a route with no school waypoint - route 108 has none;
+      * a child whose stop was deleted from the route while students.routeid
+        still points at it.
+    The controller sends null for a missing pin and the app draws one less.
+
+    IS NOT DISTINCT FROM, not `=`, for the is_mine flag: the school row's
+    studentid is null, and `null = $2` is null rather than false, which would
+    hand the controller a three-valued boolean to reason about. This returns a
+    real true/false for every row.
 */
-async function getStopsForMap(routeid) {
+async function getMapPins(routeid, studentid) {
     const { rows } = await pool.query(`
-        SELECT longitude, latitude, type, studentid,
-               sort_number, afternoon_sort_number
+        SELECT longitude, latitude,
+               type = 'school' AS is_school,
+               studentid IS NOT DISTINCT FROM $2 AS is_mine
           FROM waypoints
          WHERE routeid = $1
+           AND (type = 'school' OR studentid = $2)
          ORDER BY sort_number
-    `, [routeid]);
+    `, [routeid, studentid]);
     return rows;
 }
 
 module.exports = {
     getChildRoute,
-    getStopsForMap
+    getMapPins
 }
