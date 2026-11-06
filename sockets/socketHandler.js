@@ -23,6 +23,29 @@ function socketHandler (server) {
     io.use(authenticateSocket);
 
     io.on("connection", (socket) => {
+      /*
+          THE ROOMS THIS ACCOUNT MUST NOT MISS, JOINED BEFORE IT ASKS.
+
+          A reconnect is a new socket in no rooms, and the client is told
+          nothing about it: it reports connected, and then receives nothing
+          for the rest of the run. That is every redeploy, every tunnel and
+          every lift - and it is the main reason a driver's status change
+          "doesn't arrive" on another device.
+
+          So a driver lands in their own route's room and a parent in their own
+          family room on every single connection, including the silent ones
+          after a drop. Nothing is remembered between connections - the rooms
+          are derived from the account, so this survives the process dying.
+          See roomsForUser in storage/usersQuery.js for what is deliberately
+          left out of it.
+
+          Failure is logged and swallowed. A socket that cannot be pre-joined
+          is still a working socket: it can ask for its rooms the old way, and
+          refusing the connection over this would be a worse outcome than a
+          client that has to re-join.
+      */
+      controller().joinStandingRooms(socket);
+
       //Joining is authorized now: a room carries live child locations.
       socket.on(SOCKET_EVENT.JOIN, (routeid, ack) => {
         controller().handleRouteJoin(socket, routeid, ack);

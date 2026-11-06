@@ -50,7 +50,19 @@ const SOCKET_EVENT = {
     FAMILY_LEAVE: "family:leave",         //parent -> server
     FAMILY_BUS: "family:bus",             //server -> family room
     FAMILY_ETA: "family:eta",             //server -> one family
-    FAMILY_RUN: "family:run"              //server -> family room
+    FAMILY_RUN: "family:run",             //server -> family room
+    FAMILY_STUDENT: "family:student",     //server -> one family
+
+    /*
+        "Stop trusting what you have and read it again."
+
+        Some changes cannot be described as an update to one row: a trip
+        restart deletes the register outright, so every attendanceid a client
+        is holding is now dead. Rather than invent an event per cause, this
+        says only that the route's register is no longer what the client
+        thinks, and the client re-reads it over HTTP.
+    */
+    ROUTE_RELOAD: "route:reload"          //server -> route room + family rooms
 }
 
 const PHASE = {

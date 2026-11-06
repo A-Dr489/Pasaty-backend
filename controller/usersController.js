@@ -556,6 +556,29 @@ exports.handleRouteJoin = async (socket, routeid, ack) => {
 }
 
 /*
+    Puts a freshly connected socket into the rooms its account always belongs
+    in, so a reconnect does not go quiet.
+
+    Not awaited by the caller and never throws: a socket that fails to be
+    pre-joined still works, and the client can still ask for a room itself.
+    The log line is what makes a silent run diagnosable afterwards.
+*/
+exports.joinStandingRooms = async (socket) => {
+    try {
+        if(!socket.user) return;
+
+        const rooms = await db.roomsForUser(socket.user.userid, socket.user.role);
+        //Connected mid-lookup and gone again: joining rooms on a dead socket
+        //would leak them into the adapter until it noticed.
+        if(!socket.connected) return;
+
+        rooms.forEach((room) => socket.join(room));
+    } catch(err) {
+        console.log("Socket Error (joinStandingRooms): " + err);
+    }
+}
+
+/*
     A parent watching their child's bus.
 
     Two rooms, for the two shapes of answer: the bus position is the same for

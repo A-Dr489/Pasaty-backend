@@ -3,7 +3,7 @@ const { getIO } = require("../sockets/socketHandler.js");
 const { httpError, assertInScope } = require("../utils/functions.js");
 const { assertRouteInScope, assertStudentInScope, assertAttendanceInScope } = require("../storage/scopeQuery.js");
 const { SOCKET_EVENT, ATTENDANCE_STATUS, PHASE, ROUTE_STATUS } = require("../utils/enum.js");
-const { emitRunToFamilies } = require("../sockets/familyFeed.js");
+const { emitRunToFamilies, emitStudentToFamily, emitReload } = require("../sockets/familyFeed.js");
 const {
   readDatePage,
   readDateIdPage,
@@ -33,6 +33,83 @@ const { notify, notifyRoute } = require("../utils/push.js");
 
 //The invisible half of a push, which the app reads to route the tap. Every
 //value must be a string by the time it reaches FCM; utils/push.js converts.
+/*
+    One child's status, told to everyone entitled to know it: the staff room,
+    where the driver and the portal are, and that child's own family.
+
+    SENT EVEN WHEN NOTHING CHANGED, and that is the point.
+
+    It used to be gated on `result.changed`, so a second tap of the same button
+    wrote nothing and said nothing. That looked like a sensible way to avoid
+    duplicate events, and it is the reason a wrong board stays wrong: sockets
+    have no replay, so a client that misses the one and only broadcast - a
+    tunnel, a backgrounded app, a redeploy - has no way back to the truth short
+    of re-reading over HTTP, and nothing tells it to. Re-sending a statement of
+    current state is harmless; withholding it is not.
+
+    The PUSH NOTIFICATION stays behind `changed`, in the callers. That one is
+    not idempotent - telling a parent twice that their child boarded is a bug -
+    and the distinction between the two is the whole reason this is a separate
+    function rather than one flag.
+*/
+function broadcastStatus(result, phase, extra = {}) {
+    getIO().to(`route:${result.routeid}`).emit(SOCKET_EVENT.ATTENDANCE_UPDATED, {
+        attendanceid: result.attendanceid,
+        phase: phase,
+        old_status: result.old_status,
+        new_status: result.new_status,
+        ...extra
+    });
+
+    emitStudentToFamily(getIO(), result.routeid, result.parentid, {
+        studentid: result.studentid,
+        phase: phase,
+        status: result.new_status,
+        at: extra.boarded_at ?? extra.dropped_off_at ?? result.at ?? null
+    });
+}
+
+/*
+    The end of a run changes a lot of children at once, and until now said so
+    only in the single big completion payload.
+
+    Two audiences, two needs:
+
+    THE STAFF ROOM already receives that payload with the whole final roster,
+    so the only children it has never been told about individually are the ones
+    this call moved on its own - BOARDED -> DROPPED_OFF, WAITING -> ABSENT. A
+    client that follows attendance:updated and not the completion event learned
+    nothing about those. They get one event each.
+
+    THE FAMILIES have no roster event at all: family:run says a run finished,
+    not what happened to anybody. So every child's final status goes to their
+    own family, whether this call set it or the driver did. It is the last word
+    on the day and the one a parent's screen has to end on.
+*/
+function broadcastFinalStatuses(routeid, phase, students) {
+    students.forEach((student) => {
+        const movedByThisCall = student.auto_absent === true || student.auto_dropped_off === true;
+
+        if(movedByThisCall) {
+            getIO().to(`route:${routeid}`).emit(SOCKET_EVENT.ATTENDANCE_UPDATED, {
+                attendanceid: student.attendanceid,
+                phase: phase,
+                //The prior value is not read back by the completion statements,
+                //and inventing one would be worse than admitting it.
+                old_status: null,
+                new_status: student.status ?? student.afternoon_status ?? student.morning_status ?? null
+            });
+        }
+
+        emitStudentToFamily(getIO(), routeid, student.parentid, {
+            studentid: student.id,
+            phase: phase,
+            status: student.status ?? student.afternoon_status ?? student.morning_status ?? null,
+            at: null
+        });
+    });
+}
+
 function studentEvent(result, phase) {
     return {
         type: "attendance_updated",
@@ -130,16 +207,10 @@ exports.boardMorningStudent = async (req, res, next) => {
       const driverid = req.user.userid;
       const result = await db.boardMorning(attendanceid, driverid);
 
-      // Broadcast only on a real state change -> no duplicate events on re-tap.
-      if (result.changed) {
-        getIO().to(`route:${result.routeid}`).emit(SOCKET_EVENT.ATTENDANCE_UPDATED, {
-          attendanceid: result.attendanceid,
-          phase: "morning",
-          old_status: result.old_status,
-          new_status: result.new_status,
-          boarded_at: result.boarded_at,
-        });
+      //Always broadcast; only notify on a real change. See broadcastStatus.
+      broadcastStatus(result, "morning", { boarded_at: result.boarded_at });
 
+      if (result.changed) {
         notify([result.parentid], {
           kind: "boarded_morning",
           name: result.student_name,
@@ -165,15 +236,9 @@ exports.absentMorningStudent = async (req, res, next) => {
       const driverid = req.user.userid;
       const result = await db.absentMorning(attendanceid, driverid);
 
-      // Broadcast only on a real state change -> no duplicate events on re-tap.
-      if (result.changed) {
-        getIO().to(`route:${result.routeid}`).emit(SOCKET_EVENT.ATTENDANCE_UPDATED, {
-          attendanceid: result.attendanceid,
-          phase: "morning",
-          old_status: result.old_status,
-          new_status: result.new_status,
-        });
+      broadcastStatus(result, "morning");
 
+      if (result.changed) {
         notify([result.parentid], {
           kind: "absent_morning",
           name: result.student_name,
@@ -208,6 +273,7 @@ exports.completeMorning = async (req, res, next) => {
 
     //And the families, without the roster: the run is over, close the map.
     emitRunToFamilies(getIO(), routeid, PHASE.MORNING, ROUTE_STATUS.COMPLETED, result.completed_at);
+    broadcastFinalStatuses(routeid, "morning", result.students);
 
     /*
         Completing the morning is where two things are decided for every child
@@ -290,15 +356,9 @@ exports.boardAfternoonStudent = async (req, res, next) => {
 
       const result = await db.boardAfternoon(attendanceid, req.user.userid);
 
-      if (result.changed) {
-        getIO().to(`route:${result.routeid}`).emit(SOCKET_EVENT.ATTENDANCE_UPDATED, { //attendance:updated
-          attendanceid: result.attendanceid,
-          phase: 'afternoon',
-          old_status: result.old_status,
-          new_status: result.new_status,
-          boarded_at: result.at,
-        });
+      broadcastStatus(result, "afternoon", { boarded_at: result.at });
 
+      if (result.changed) {
         notify([result.parentid], {
           kind: "boarded_afternoon",
           name: result.student_name,
@@ -321,15 +381,9 @@ exports.absentAfternoonStudent = async (req, res, next) => {
       const driverid = req.user.userid;
       const result = await db.absentAfternoon(attendanceid, driverid);
 
-      // Broadcast only on a real state change -> no duplicate events on re-tap.
-      if (result.changed) {
-        getIO().to(`route:${result.routeid}`).emit(SOCKET_EVENT.ATTENDANCE_UPDATED, {
-          attendanceid: result.attendanceid,
-          phase: "afternoon",
-          old_status: result.old_status,
-          new_status: result.new_status,
-        });
+      broadcastStatus(result, "afternoon");
 
+      if (result.changed) {
         notify([result.parentid], {
           kind: "absent_afternoon",
           name: result.student_name,
@@ -351,15 +405,9 @@ exports.dropoffAfternoonStudent = async (req, res, next) => {
 
       const result = await db.dropoffAfternoon(attendanceid, req.user.userid);
 
-      if (result.changed) {
-        getIO().to(`route:${result.routeid}`).emit(SOCKET_EVENT.ATTENDANCE_UPDATED, { //attendance:updated
-          attendanceid: result.attendanceid,
-          phase: 'afternoon',
-          old_status: result.old_status,
-          new_status: result.new_status,
-          dropped_off_at: result.at,
-        });
+      broadcastStatus(result, "afternoon", { dropped_off_at: result.at });
 
+      if (result.changed) {
         notify([result.parentid], {
           kind: "dropped_off",
           name: result.student_name,
@@ -390,6 +438,7 @@ exports.completeAfternoon = async (req, res, next) => {
     });
 
     emitRunToFamilies(getIO(), routeid, PHASE.AFTERNOON, ROUTE_STATUS.COMPLETED, result.completed_at);
+    broadcastFinalStatuses(routeid, "afternoon", result.students);
 
     /*
         The afternoon ends with one notification per parent, never two.
@@ -467,6 +516,20 @@ exports.adminOverride = async (req, res, next) => {
           old_status: result.old_status,
           new_status: result.new_status,
           changed_at: result.changed_at,
+        });
+
+        /*
+            The family hears it as an ordinary status change. A parent has no
+            use for the distinction between the driver tapping and an admin
+            correcting the driver - what reached them was wrong and now it is
+            right. should_broadcast already limits this to today's register of
+            a run in progress, so editing last week's history stays silent.
+        */
+        emitStudentToFamily(getIO(), result.routeid, result.parentid, {
+          studentid: result.studentid,
+          phase: result.phase,
+          status: result.new_status,
+          at: result.changed_at
         });
       }
   
@@ -727,6 +790,18 @@ exports.restartTrip = async (req, res, next) => {
     if (!Number.isInteger(routeid)) throw httpError(400, 'Invalid routeid');
     await assertRouteInScope(req.user, routeid);
     await db.restartTrip(routeid);
+
+    /*
+        The register this route had is gone - every attendanceid any client is
+        holding now points at a deleted row, and the next tap on one would come
+        back 404. No per-row event can say that, so this says only "read it
+        again" and the clients re-fetch.
+
+        The delete itself is left exactly as it was, across every date: that is
+        this endpoint's long-standing behaviour and not something to change
+        from under you here.
+    */
+    emitReload(getIO(), routeid, "restarted");
 
     res.json({message: "Done!"});
   } catch (err) {

@@ -498,6 +498,57 @@ async function canAccessRoute(userid, role, routeid, user = null) {
 }
 
 /*
+    The rooms an account should be in the moment it connects, derived from what
+    it is rather than from what it last asked for.
+
+    WHY DERIVED AND NOT REMEMBERED
+    ------------------------------
+    Socket.io rooms are keyed by socket id. A reconnect is a NEW socket in no
+    rooms at all, and the client is given no error about it - it sits there
+    connected and silent. That is measurable: after a server restart a client
+    reconnects on its own, reports connected: true, and receives nothing,
+    because nothing re-joined it.
+
+    Remembering each socket's joins in process memory would fix a network blip
+    and nothing else: the memory dies with the process, and a redeploy is the
+    most common reconnect this app sees. Deriving the rooms from the database
+    survives a restart, costs one indexed query per connection - which happens
+    per app launch, not per request - and needs no change in any client.
+
+    Only the rooms that must not be missed are included. A driver gets their
+    own routes' room, where the attendance echoes go. A parent gets their own
+    family room, which carries their child's status changes and arrival times.
+
+    Deliberately NOT here:
+      * the portal roles. An admin would be joined to every route in the fleet
+        and drown in bus pings; the portal watches one route at a time and
+        already re-joins on reconnect by itself.
+      * `route:<id>:family`, the shared bus broadcast. That is a live map
+        being looked at, so it stays an explicit family:join and goes quiet
+        when the map closes rather than streaming a position every fifteen
+        seconds to every parent who merely has the app open.
+*/
+async function roomsForUser(userid, role) {
+    if(role === ROLE.DRIVER) {
+        const { rows } = await pool.query(
+            "SELECT id FROM routes WHERE driverid = $1",
+            [userid]
+        );
+        return rows.map((row) => `route:${row.id}`);
+    }
+
+    if(role === ROLE.PARENT) {
+        const { rows } = await pool.query(
+            "SELECT DISTINCT routeid FROM students WHERE parentid = $1 AND routeid IS NOT NULL",
+            [userid]
+        );
+        return rows.map((row) => `route:${row.routeid}:family:${userid}`);
+    }
+
+    return [];
+}
+
+/*
     Whether this parent has a child on this route - the gate on the family
     rooms, and the same question canAccessRoute used to answer for them.
 
@@ -649,5 +700,6 @@ module.exports = {
     getRouteGeometry,
     getStopsForEta,
     canAccessRoute,
-    canWatchAsFamily
+    canWatchAsFamily,
+    roomsForUser
 }

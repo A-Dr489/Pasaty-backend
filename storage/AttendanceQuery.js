@@ -814,12 +814,18 @@ async function adminOverrideAttendance(attendanceid, admin, phase, status) {
 
   return withTransaction(async (client) => {
     const { rows } = await client.query(
-      `SELECT a.id, a.routeid, a.morning_status, a.afternoon_status,
+      //studentid and parentid are read for the same reason the driver paths
+      //read them: a status change has to reach that child's family. LEFT JOIN,
+      //because attendance.studentid is nullable and a row with no student must
+      //still be correctable by an admin.
+      `SELECT a.id, a.routeid, a.studentid, a.morning_status, a.afternoon_status,
               r.morning_status   AS route_morning_status,
               r.afternoon_status AS route_afternoon_status,
-              (a.attendance_date = (now() AT TIME ZONE $2)::date) AS is_today
+              (a.attendance_date = (now() AT TIME ZONE $2)::date) AS is_today,
+              s.parentid
          FROM attendance a
          JOIN routes r ON r.id = a.routeid
+         LEFT JOIN students s ON s.id = a.studentid
         WHERE a.id = $1
         FOR UPDATE OF a`,
       [attendanceid, SCHOOL_TZ]
@@ -839,6 +845,7 @@ async function adminOverrideAttendance(attendanceid, admin, phase, status) {
     if (oldStatus === status) {
       return { 
         changed: false, attendanceid: row.id, routeid: row.routeid,
+        studentid: row.studentid, parentid: row.parentid,
         phase, old_status: oldStatus, new_status: status,
         should_broadcast: false 
       };
@@ -870,6 +877,8 @@ async function adminOverrideAttendance(attendanceid, admin, phase, status) {
       changed: true,
       attendanceid: row.id,
       routeid: row.routeid,
+      studentid: row.studentid,
+      parentid: row.parentid,
       phase,
       old_status: oldStatus,
       new_status: status,
